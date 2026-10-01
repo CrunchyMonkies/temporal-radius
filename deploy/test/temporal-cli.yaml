@@ -1,0 +1,29 @@
+# Toolbox pod with the temporal CLI (and an Istio sidecar) for running smoke-test workflows:
+#   kubectl -n radius-coa-test exec deploy/temporal-cli -c cli -- temporal workflow execute ...
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-cli
+  labels: { app: temporal-cli }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: temporal-cli }
+  template:
+    metadata:
+      labels:
+        app: temporal-cli
+        sidecar.istio.io/inject: "true"
+      annotations:
+        proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+    spec:
+      containers:
+        - name: cli
+          image: harbor.bne1.ouchi.com.au/docker.io/temporalio/admin-tools:1.24.2-tctl-1.18.1-cli-1.0.0
+          command: ["sleep", "infinity"]
+          env:
+            - { name: TEMPORAL_ADDRESS, value: "prod-frontend.temporal.svc:7233" }
+            - { name: TEMPORAL_NAMESPACE, value: "default" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 256Mi }

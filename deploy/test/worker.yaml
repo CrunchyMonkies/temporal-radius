@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radius-coa-worker
+  labels: { app: radius-coa-worker }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: radius-coa-worker }
+  template:
+    metadata:
+      labels:
+        app: radius-coa-worker
+        # prod-frontend enforces STRICT Istio mTLS, so the worker needs a sidecar.
+        sidecar.istio.io/inject: "true"
+      annotations:
+        proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: worker
+          image: radius-coa-worker
+          args: ["worker"]
+          env:
+            - { name: TEMPORAL_ADDRESS, value: "prod-frontend.temporal.svc:7233" }
+            - { name: TEMPORAL_NAMESPACE, value: "default" }
+            - { name: TEMPORAL_TASK_QUEUE, value: "radius-coa" }
+            - name: RADIUS_SECRET
+              valueFrom: { secretKeyRef: { name: radius-coa, key: RADIUS_SECRET } }
+            - { name: RADIUS_TIMEOUT_MS, value: "2000" }
+            - { name: RADIUS_RETRIES, value: "2" }
+            - { name: RUST_LOG, value: "info" }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

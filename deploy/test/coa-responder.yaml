@@ -1,0 +1,42 @@
+# Test NAS: answers CoA/Disconnect requests on UDP 3799 (NAK when User-Name starts with "nak").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coa-responder
+  labels: { app: coa-responder }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: coa-responder }
+  template:
+    metadata:
+      labels:
+        app: coa-responder
+        sidecar.istio.io/inject: "false"
+    spec:
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: coa-responder
+          image: radius-coa-worker
+          args: ["coa-responder"]
+          env:
+            - name: RADIUS_SECRET
+              valueFrom: { secretKeyRef: { name: radius-coa, key: RADIUS_SECRET } }
+          ports:
+            - { name: coa, containerPort: 3799, protocol: UDP }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coa-responder
+spec:
+  selector: { app: coa-responder }
+  ports:
+    - { name: coa, port: 3799, targetPort: coa, protocol: UDP }
