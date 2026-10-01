@@ -24,7 +24,7 @@ spec:
           args: ["worker"]
           env:
             - { name: TEMPORAL_ADDRESS, value: "prod-frontend.temporal.svc:7233" }
-            - { name: TEMPORAL_NAMESPACE, value: "default" }
+            - { name: TEMPORAL_NAMESPACE, value: "radius-coa" }
             - { name: TEMPORAL_TASK_QUEUE, value: "radius-coa" }
             - name: RADIUS_SECRET
               valueFrom: { secretKeyRef: { name: radius-coa, key: RADIUS_SECRET } }

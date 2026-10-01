@@ -92,7 +92,11 @@ binaries to a GitHub Release and pushes a multi-arch image to `ghcr.io/crunchymo
 * a test `coa-responder` behind a UDP Service
 * a `temporal-cli` toolbox pod
 
+The worker uses the Temporal namespace `radius-coa`. On clusters managed by temporal-operator it
+can be created with `deploy/temporal-namespace.yaml`.
+
 ```sh
+kubectl apply -f deploy/temporal-namespace.yaml
 kubectl apply -k deploy/test
 kubectl -n radius-coa-test exec deploy/temporal-cli -c cli -- \
   temporal workflow execute --task-queue radius-coa --type SendCoaWorkflow \

@@ -1,0 +1,12 @@
+# Temporal namespace for the worker (temporal-operator CR). Lives in the `temporal` k8s namespace,
+# so it is applied separately from deploy/test:  kubectl apply -f deploy/temporal-namespace.yaml
+apiVersion: temporal.io/v1beta1
+kind: TemporalNamespace
+metadata:
+  name: radius-coa
+  namespace: temporal
+spec:
+  clusterRef:
+    name: prod
+  retentionPeriod: 24h
+  allowDeletion: true

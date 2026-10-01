@@ -10,4 +10,4 @@ resources:
 images:
   - name: radius-coa-worker
     newName: harbor.bne1.ouchi.com.au/library/radius-coa-worker
-    newTag: latest
+    newTag: 0b94812

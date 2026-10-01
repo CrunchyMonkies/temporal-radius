@@ -23,7 +23,7 @@ spec:
           command: ["sleep", "infinity"]
           env:
             - { name: TEMPORAL_ADDRESS, value: "prod-frontend.temporal.svc:7233" }
-            - { name: TEMPORAL_NAMESPACE, value: "default" }
+            - { name: TEMPORAL_NAMESPACE, value: "radius-coa" }
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }
