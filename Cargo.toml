@@ -4,25 +4,32 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-temporalio-client = "1.0.0"
-temporalio-common = "1.0.0"
+# Default features are off to drop the Prometheus exporter (and its HTTP server stack).
+temporalio-client = { version = "1.0.0", default-features = false, features = ["envconfig", "tls-ring"] }
+temporalio-common = { version = "1.0.0", default-features = false }
 temporalio-macros = "1.0.0"
-temporalio-sdk = "1.0.0"
+# Referenced by code generated from the temporalio-macros attributes.
 temporalio-workflow = "1.0.0"
-tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+temporalio-sdk = { version = "1.0.0", default-features = false, features = ["envconfig"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 radius-rust = "0.4"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3"
+# `Targets` filter instead of `env-filter`, which pulls in regex.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 md-5 = "0.10"
 hmac = "0.12"
 rand = "0.8"
 thiserror = "2"
 
 [profile.release]
-lto = "thin"
+# Optimised for size: the worker is I/O-bound (UDP + gRPC), so "z" costs nothing noticeable.
+# panic stays "unwind": the Temporal SDK catches activity/workflow panics and turns them into task
+# failures; "abort" would save ~2 MB more but a panic would then kill the whole worker process.
+opt-level = "z"
+lto = "fat"
 codegen-units = 1
 strip = true

@@ -7,7 +7,8 @@ mod workflow;
 use anyhow::Context;
 use temporalio_client::{envconfig::LoadClientConfigProfileOptions, Client, ClientOptions, Connection};
 use temporalio_sdk::{Runtime, Worker, WorkerOptions};
-use tracing_subscriber::EnvFilter;
+use tracing::Level;
+use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
 use crate::{
     activities::RadiusActivities,
@@ -20,10 +21,12 @@ const USAGE: &str = "usage: radius-coa-worker [worker|coa-responder]";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with_target(false)
-        .init();
+    // RUST_LOG accepts `level` or `target=level,...` directives (no regex/span filters).
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.parse::<Targets>().ok())
+        .unwrap_or_else(|| Targets::new().with_default(Level::INFO));
+    tracing_subscriber::registry().with(fmt::layer().with_target(false).with_ansi(false)).with(filter).init();
 
     let mode = std::env::args().nth(1).unwrap_or_else(|| "worker".into());
     let result = match mode.as_str() {
