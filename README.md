@@ -8,8 +8,8 @@ It registers the following on the configured task queue:
 
 | type | name | description |
 |---|---|---|
-| activity | `sendCoa` | Sends a CoA-Request or Disconnect-Request, verifies the reply and returns ACK/NAK |
-| workflow | `SendCoaWorkflow` | Thin wrapper that runs `sendCoa` with a 5-attempt retry policy |
+| activity | `actRadiusCoa` | Sends a CoA-Request or Disconnect-Request, verifies the reply and returns ACK/NAK |
+| workflow | `SendCoaWorkflow` | Thin wrapper that runs `actRadiusCoa` with a 5-attempt retry policy |
 
 TypeScript types for calling these from TS workflows and clients are in
 [`types/radius-coa.d.ts`](types/radius-coa.d.ts).

@@ -1,4 +1,4 @@
-//! A thin workflow wrapping `sendCoa`, so the activity can be exercised from the `temporal` CLI
+//! A thin workflow wrapping `actRadiusCoa`, so the activity can be exercised from the `temporal` CLI
 //! (or any client) without a separate workflow worker.
 
 use std::time::Duration;
@@ -29,6 +29,6 @@ impl SendCoaWorkflow {
                 .maximum_attempts(5)
                 .build(),
         );
-        Ok(ctx.execute_activity(RadiusActivities::send_coa, req, opts).await?)
+        Ok(ctx.execute_activity(RadiusActivities::act_radius_coa, req, opts).await?)
     }
 }

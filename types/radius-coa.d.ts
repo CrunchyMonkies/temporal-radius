@@ -3,8 +3,8 @@
  *
  * The worker polls the task queue configured by `TEMPORAL_TASK_QUEUE` (default `"radius-coa"`)
  * and registers:
- *   - activity `sendCoa`         — send a RADIUS CoA-Request / Disconnect-Request (RFC 5176)
- *   - workflow `SendCoaWorkflow` — thin wrapper that runs `sendCoa` with a retry policy
+ *   - activity `actRadiusCoa`         — send a RADIUS CoA-Request / Disconnect-Request (RFC 5176)
+ *   - workflow `SendCoaWorkflow` — thin wrapper that runs `actRadiusCoa` with a retry policy
  *
  * Calling the activity from a TypeScript workflow:
  *
@@ -13,13 +13,13 @@
  * import type { RadiusCoaActivities, RadiusCoaTaskQueue } from './radius-coa';
  *
  * const taskQueue: RadiusCoaTaskQueue = 'radius-coa';
- * const { sendCoa } = proxyActivities<RadiusCoaActivities>({
+ * const { actRadiusCoa } = proxyActivities<RadiusCoaActivities>({
  *   taskQueue,
  *   startToCloseTimeout: '1 minute',
  *   retry: { maximumAttempts: 5, nonRetryableErrorTypes: ['InvalidCoaRequest'] },
  * });
  *
- * const res = await sendCoa({
+ * const res = await actRadiusCoa({
  *   nasAddress: '10.0.0.1',
  *   attributes: [
  *     { name: 'User-Name', value: 'alice' },
@@ -47,7 +47,7 @@
 export type RadiusCoaTaskQueue = 'radius-coa' | (string & {});
 
 /** Registered activity type name. */
-export type SendCoaActivityName = 'sendCoa';
+export type RadiusCoaActivityName = 'actRadiusCoa';
 /** Registered workflow type name. */
 export type SendCoaWorkflowName = 'SendCoaWorkflow';
 
@@ -79,7 +79,7 @@ export interface VendorAttribute {
   value: AttributeValue;
 }
 
-/** Input of the `sendCoa` activity and the `SendCoaWorkflow` workflow. */
+/** Input of the `actRadiusCoa` activity and the `SendCoaWorkflow` workflow. */
 export interface CoaRequest {
   /** NAS hostname or IP address. */
   nasAddress: string;
@@ -123,7 +123,7 @@ export type ErrorCause =
   | 507 // RequestInitiated
   | 508; // MultipleSessionSelectionUnsupported
 
-/** Output of `sendCoa` / `SendCoaWorkflow`. A NAK is a *successful* result with `acked: false`. */
+/** Output of `actRadiusCoa` / `SendCoaWorkflow`. A NAK is a *successful* result with `acked: false`. */
 export interface CoaResult {
   code: CoaReplyCode;
   /** `true` for CoA-ACK / Disconnect-ACK. */
@@ -155,7 +155,7 @@ export type CoaFailureType =
 
 /** Activity interface for `proxyActivities<RadiusCoaActivities>()`. */
 export interface RadiusCoaActivities {
-  sendCoa(request: CoaRequest): Promise<CoaResult>;
+  actRadiusCoa(request: CoaRequest): Promise<CoaResult>;
 }
 
 /** Signature of the bundled workflow, for `client.workflow.start<SendCoaWorkflow>(...)`. */

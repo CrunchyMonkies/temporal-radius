@@ -22,8 +22,8 @@ impl RadiusActivities {
     ///
     /// A NAK is a successful activity result (`acked: false`); timeouts and network errors are
     /// retryable failures; invalid input and reply-verification failures are non-retryable.
-    #[activity(name = "sendCoa")]
-    pub async fn send_coa(
+    #[activity(name = "actRadiusCoa")]
+    pub async fn act_radius_coa(
         self: Arc<Self>,
         ctx: ActivityContext,
         req: CoaRequest,
@@ -34,15 +34,15 @@ impl RadiusActivities {
             attempt = info.attempt,
             nas = %req.nas_address,
             kind = ?req.kind,
-            "sendCoa"
+            "actRadiusCoa"
         );
         match self.client.send(&req).await {
             Ok(res) => {
-                tracing::info!(nas = %res.nas, code = ?res.code, attempts = res.attempts, "sendCoa reply");
+                tracing::info!(nas = %res.nas, code = ?res.code, attempts = res.attempts, "actRadiusCoa reply");
                 Ok(res)
             }
             Err(err) => {
-                tracing::warn!("sendCoa failed: {err}");
+                tracing::warn!("actRadiusCoa failed: {err}");
                 Err(ActivityError::application(to_failure(err)))
             }
         }
