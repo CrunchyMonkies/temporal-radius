@@ -39,5 +39,9 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /radius-coa-worker /radius-coa-worker
 USER 65534:65534
+EXPOSE 8080
+# Exec form needs no shell: the binary probes its own /readyz endpoint (HEALTH_BIND, default :8080).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["/radius-coa-worker", "healthcheck"]
 ENTRYPOINT ["/radius-coa-worker"]
 CMD ["worker"]

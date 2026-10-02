@@ -4,7 +4,7 @@
 //! replies ACK — or NAK with Error-Cause 503 (Session-Context-Not-Found) when User-Name starts
 //! with `nak`. Requests that fail verification are dropped silently, as RFC 5176 §3.4 requires.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use radius_rust::{protocol::dictionary::Dictionary, tools::integer_to_bytes};
 use tokio::net::UdpSocket;
@@ -12,6 +12,7 @@ use tokio::net::UdpSocket;
 use crate::{
     coa::{self, AttributeValue, ATTR_ERROR_CAUSE},
     config::ResponderConfig,
+    health::{self, Health},
 };
 
 const ERROR_CAUSE_SESSION_NOT_FOUND: u32 = 503;
@@ -19,6 +20,13 @@ const ERROR_CAUSE_SESSION_NOT_FOUND: u32 = 503;
 pub async fn run(cfg: ResponderConfig) -> anyhow::Result<()> {
     let socket = UdpSocket::bind(cfg.bind).await?;
     tracing::info!(bind = %socket.local_addr()?, "CoA responder listening");
+    if let Some(bind) = cfg.health.bind {
+        // Nothing upstream to check: ready for as long as the socket is bound.
+        let health = Health::new(Duration::MAX);
+        health.set_ready(true);
+        let addr = health::spawn(bind, health).await?;
+        tracing::info!(%addr, "health endpoint listening");
+    }
     serve(socket, cfg.radius.secret, cfg.radius.dictionary_path.as_deref()).await
 }
 

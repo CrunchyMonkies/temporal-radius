@@ -29,6 +29,8 @@ TypeScript types for calling these from TS workflows and clients are in
 | `RADIUS_RETRIES` | `2` | retransmissions per activity attempt |
 | `RADIUS_DICTIONARY` | embedded | path to a FreeRADIUS-format dictionary that replaces the built-in one |
 | `COA_RESPONDER_BIND` | `0.0.0.0:3799` | `coa-responder` mode only |
+| `HEALTH_BIND` | `0.0.0.0:8080` | HTTP health endpoint; `off` disables it |
+| `HEALTH_CHECK_INTERVAL_SECS` | `15` | how often the worker checks Temporal's gRPC health service |
 | `RUST_LOG` | `info` | |
 
 ## Activity contract
@@ -72,6 +74,21 @@ RADIUS_SECRET=... radius-coa-worker coa-responder                               
 The `coa-responder` mode is a minimal test NAS. It verifies requests with `RADIUS_SECRET` and
 replies ACK, or NAK with `Error-Cause=503` when `User-Name` starts with `nak`. It silently drops
 requests that fail authentication.
+
+## Health checks
+
+A minimal built-in HTTP endpoint (no extra crates, adds about 40 KB) serves:
+
+| path | meaning |
+|---|---|
+| `GET /healthz` | **liveness**: 200 while the process is responsive. Never depends on Temporal, so an outage doesn't restart-loop pods |
+| `GET /readyz` | **readiness**: worker returns 200 while Temporal's gRPC health check passed within the last 3 intervals, else 503. The responder is ready once its UDP socket is bound |
+
+* **Docker:** the image runs `radius-coa-worker healthcheck`, which probes `/readyz` on
+  `HEALTH_BIND` over loopback and exits 0 or 1. It needs no shell or curl, so it works in a
+  scratch image. Run `radius-coa-worker healthcheck /healthz` to check liveness instead.
+* **Kubernetes:** use `httpGet` probes on port 8080. See `deploy/test/worker.yaml`
+  (startup/liveness on `/healthz`, readiness on `/readyz`).
 
 ## Building
 

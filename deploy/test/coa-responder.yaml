@@ -24,6 +24,19 @@ spec:
               valueFrom: { secretKeyRef: { name: radius-coa, key: RADIUS_SECRET } }
           ports:
             - { name: coa, containerPort: 3799, protocol: UDP }
+            - { name: health, containerPort: 8080, protocol: TCP }
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }

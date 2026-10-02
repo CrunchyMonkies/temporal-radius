@@ -188,6 +188,10 @@ export interface RadiusCoaWorkerEnv {
   RADIUS_DICTIONARY?: string;
   /** `coa-responder` mode only. Default `0.0.0.0:3799`. */
   COA_RESPONDER_BIND?: string;
+  /** HTTP health endpoint (`/healthz`, `/readyz`). Default `0.0.0.0:8080`; `off` disables. */
+  HEALTH_BIND?: string;
+  /** Seconds between Temporal health checks backing `/readyz`. Default `15`. */
+  HEALTH_CHECK_INTERVAL_SECS?: string;
   /** tracing filter, e.g. `info`, `radius_coa_worker=debug`. */
   RUST_LOG?: string;
 }
