@@ -33,20 +33,32 @@ Everything lives in [`deploy/freeradius`](../deploy/freeradius):
 
 ## How a CoA reaches the NAS
 
-1. The NAS connects to `freeradius-radsec:2083` and authenticates with its **client
-   certificate**.
-2. On the first packet FreeRADIUS answers (a Status-Server watchdog, an Access-Request or an
-   Accounting-Request), it labels that TLS connection with the certificate's **Common Name**.
-3. The worker sends an ordinary RFC 5176 CoA-Request to `freeradius-coa:3799` with
-   `NAS-Identifier` set to that CN.
-4. FreeRADIUS sends the request down the connection labelled with that CN. The NAS's ACK or NAK
+1. The NAS connects to `freeradius-radsec:2083` with the **client certificate**. All NASes can
+   share one certificate: it only proves the NAS may connect.
+2. When FreeRADIUS answers a packet from the NAS that carries a `NAS-Identifier` (an
+   Access-Request, an Accounting-Request, or a Status-Server watchdog that includes it), it
+   labels that TLS connection with the **`NAS-Identifier`**.
+3. The worker sends an ordinary RFC 5176 CoA-Request to `freeradius-coa:3799` with the same
+   `NAS-Identifier`.
+4. FreeRADIUS sends the request down the connection with that label. The NAS's ACK or NAK
    travels back the same way and is relayed to the worker.
 
-**Rule: each NAS's certificate CN must equal the `NAS-Identifier` you put in CoA requests.** The
-label comes from the certificate, not from anything the NAS sends. FreeRADIUS would also accept
-extra labels from a NAS (`Operator-Name = "+name"` in a Status-Server), which would let one NAS
-claim another's CoA traffic. `sites/radsec` deletes that attribute, and the test bench checks
-that such a claim fails.
+Rules that follow from this:
+
+* **Every NAS needs a unique `NAS-Identifier`.** If two NASes use the same one, a CoA for either
+  goes to whichever connection FreeRADIUS picks.
+* **A NAS is reachable once it has sent a packet with its `NAS-Identifier` on the current
+  connection.** If its watchdog doesn't include `NAS-Identifier`, that is its first Access-Request
+  or Accounting-Request after (re)connecting. Enable interim accounting so a quiet NAS
+  re-registers soon after a reconnect or a FreeRADIUS restart.
+* **Anyone holding the shared certificate can claim any `NAS-Identifier`** and so receive that
+  NAS's CoA requests. The certificate's private key is what protects the system: keep it off
+  anything that isn't one of your NASes, and if it leaks, replace the CA. (With one certificate
+  per NAS you could bind each `NAS-Identifier` to its certificate; this setup doesn't.)
+* Labels must be plain names (letters, digits, `.`, `_`, `:`, `@`, `-`, starting with a letter or
+  digit). Others are ignored, because FreeRADIUS reads a leading `+` or `-` as "add" or "delete".
+  `sites/radsec` also deletes `Operator-Name` from watchdogs, which FreeRADIUS would otherwise
+  accept as extra labels.
 
 ## Why a custom image
 
@@ -69,7 +81,7 @@ RadSec uses mutual TLS. You need:
 |---|---|---|
 | **CA** | both sides | `basicConstraints=CA:TRUE`, `keyUsage=keyCertSign,cRLSign`. Use a private CA dedicated to RadSec: every certificate it issues can connect |
 | **server** | FreeRADIUS | `extendedKeyUsage=serverAuth`, SAN = the DNS name NASes connect to |
-| **one per NAS** | the NAS | `extendedKeyUsage=clientAuth`, **CN = the NAS's `NAS-Identifier`** |
+| **NAS client** | every NAS (one shared certificate) | `extendedKeyUsage=clientAuth`; the CN isn't used |
 
 FreeRADIUS reads them from a Secret named `radsec-tls` with the keys `tls.crt`, `tls.key` and
 `ca.crt`. That is the cert-manager layout, so a cert-manager CA issuer works directly:
@@ -93,7 +105,7 @@ kubectl -n radius-coa-test create secret generic radsec-tls \
   --from-file=tls.crt=server.crt --from-file=tls.key=server.key --from-file=ca.crt=ca.crt
 ```
 
-Issue NAS certificates from the same CA (cert-manager `Certificate` with `usages: [client auth]`,
+Issue the NAS certificate from the same CA (cert-manager `Certificate` with `usages: [client auth]`,
 or `openssl`). See `local/gen-certs.sh` for working `openssl` commands.
 
 FreeRADIUS loads certificates at startup only. After the server certificate is renewed, run
@@ -149,10 +161,10 @@ a `RADIUS_SECRET` key.
 Notes on the manifest:
 
 * **One replica, `Recreate` strategy.** A NAS's connection exists in exactly one FreeRADIUS
-  process, and the CN-to-connection table is in that process's memory. With two pods, a CoA
+  process, and the label-to-connection table is in that process's memory. With two pods, a CoA
   could reach the pod that doesn't hold the connection and be NAKed with 502. A restart drops
-  every connection; NASes reconnect and are reachable again after their next packet (within one
-  watchdog interval).
+  every connection; NASes reconnect and are reachable again after their next packet carrying a
+  `NAS-Identifier` (within one watchdog interval if the watchdog includes it).
 * **`externalTrafficPolicy: Local`** keeps the NAS's public (NAT) address visible in FreeRADIUS
   logs instead of a node address.
 * **NetworkPolicy:** `2083/tcp` is open to everyone (the certificate is the access control);
@@ -170,10 +182,11 @@ Notes on the manifest:
 |---|---|
 | RADIUS server | the DNS name from the server certificate, port `2083`, transport TLS (RadSec) |
 | shared secret | `radsec` (fixed by RFC 6614; security comes from TLS) |
-| client certificate / key | the NAS's certificate, **CN = its `NAS-Identifier`** |
+| client certificate / key | the shared NAS certificate |
 | trusted CA | the RadSec CA |
-| `NAS-Identifier` | the same value as the certificate CN |
-| Status-Server / watchdog | **on, every 30 seconds** (see [Keepalive](#keepalive)) |
+| `NAS-Identifier` | **unique per NAS**; the value the worker puts in CoA requests |
+| Status-Server / watchdog | **on, every 30 seconds**, with `NAS-Identifier` in it if the NAS allows (see [Keepalive](#keepalive)) |
+| interim accounting | on, so a NAS whose watchdog lacks `NAS-Identifier` re-registers after a reconnect |
 | dynamic authorization (CoA) | accept CoA / Disconnect **on the RadSec connection the NAS opened**. Without this the setup cannot work |
 
 The last row is the one to check first. Accepting CoA on the NAS's own outbound connection is
@@ -204,9 +217,9 @@ Why it is set up this way:
   have no effect here. The keepalive must come from the NAS as Status-Server (RFC 5997), which
   RFC 6614 requires RadSec peers to support. FreeRADIUS answers it in the `Autz-Type
   Status-Server` section of `sites/radsec`.
-* **The watchdog also registers the NAS for CoA.** The connection is labelled when FreeRADIUS
-  answers the NAS's first packet, so with a watchdog the NAS can receive CoA straight after
-  connecting, before any user has logged in.
+* **A watchdog that includes `NAS-Identifier` also registers the NAS for CoA**, straight after
+  it connects and before any user has logged in. A watchdog without it keeps the connection
+  alive but doesn't register it; the NAS's next Access-Request or Accounting-Request does.
 * **`idle_timeout` clears out dead connections.** When a NAS disappears behind a NAT (power loss,
   NAT reboot), no FIN ever arrives and the socket would otherwise stay open indefinitely. Closing
   it after 120s of silence means CoA for that NAS fails fast with NAK 502 instead of waiting on a
@@ -254,7 +267,7 @@ What comes back:
 |---|---|---|---|
 | `CoA-ACK` / `Disconnect-ACK` | — | the NAS applied it | done |
 | `CoA-NAK` / `Disconnect-NAK` | from the NAS, e.g. `503` | the NAS refused it (session not found, ...) | inspect `errorCause` |
-| `CoaNakRetryable` failure | `502` | FreeRADIUS has no connection for that `NAS-Identifier` (NAS offline, reconnecting, CN mismatch), or the NAS didn't answer within 6s | Temporal retries |
+| `CoaNakRetryable` failure | `502` | FreeRADIUS has no connection for that `NAS-Identifier` (NAS offline, reconnecting, or hasn't sent a packet with that `NAS-Identifier` yet), or the NAS didn't answer within 6s | Temporal retries |
 | NAK | `506` | every connection for that NAS is busy | retry, or add `506` to `RADIUS_RETRY_ERROR_CAUSES` |
 | NAK | `402` | the request has no `NAS-Identifier` | fix the request |
 | `CoaTimeout` failure | — | FreeRADIUS didn't answer (pod down, network) | Temporal retries |
@@ -283,15 +296,17 @@ docker compose down
 
 | service | role |
 |---|---|
-| `freeradius` | the server under test (`RADSEC_IDLE_TIMEOUT=20` so the reaping test runs quickly) |
+| `freeradius` | the server under test (`RADSEC_IDLE_TIMEOUT=45` so the reaping test runs quickly) |
 | `nas` | a second FreeRADIUS acting as the NAS: proxies Access-Requests out over RadSec, answers CoA that comes back down the connection |
 | `upstream` | stand-in authentication server that accepts everyone |
 | `tools` | runs `radclient` in place of the worker |
-| `watchdog-nas.py` | started by `test.sh` in a `python:3-slim` container: a minimal NAS that sends only Status-Server watchdogs and ACKs CoA (`--ignore-coa` to stay silent, `--operator-name` to attempt a hijack) |
+| `watchdog-nas.py` | started by `test.sh` in a `python:3-slim` container: a minimal NAS that sends only Status-Server watchdogs (with `--nas-identifier`) and ACKs CoA (`--ignore-coa` to stay silent, `--operator-name` to try registering an extra label) |
 
 `test.sh` checks CoA routing, ACK and NAK relaying, every relay-generated NAK, the health probe,
 watchdog-only registration, keepalive past the idle timeout, idle reaping, the unresponsive-NAS
-NAK, and that a NAS cannot claim another NAS's identity. CI runs the same bench (`radsec-bench` in `.github/workflows/ci.yml`).
+NAK, that NASes sharing one certificate each receive only their own CoA, and that a watchdog
+without `NAS-Identifier` or with `Operator-Name` registers nothing. Every simulated NAS uses the
+same certificate. CI runs the same bench (`radsec-bench` in `.github/workflows/ci.yml`).
 
 To watch FreeRADIUS make decisions, run it in debug mode:
 `docker compose run --rm --entrypoint radiusd freeradius -X`.
@@ -304,7 +319,8 @@ To watch FreeRADIUS make decisions, run it in debug mode:
 | `Failed resolving "..." to IPv4 address` at startup | `UPSTREAM_RADIUS_HOST` doesn't resolve yet; the pod restarts until it does. Check the cluster domain: bne1-cluster1 uses `cluster1.bne1.ouchi.com.au`, not `cluster.local` |
 | `Directory /etc/raddb/mods-enabled/ is globally writable` | a ConfigMap mounted over the whole directory; mount each file with `subPath` |
 | NAS can't connect, TLS errors in the log | NAS certificate not issued by the RadSec CA, or missing `clientAuth`; CA without `keyUsage` (strict TLS stacks reject it) |
-| every CoA gets NAK 502 | certificate CN ≠ `NAS-Identifier` in the request; or the NAS hasn't sent anything since connecting (enable the watchdog) |
+| every CoA gets NAK 502 | the NAS's own `NAS-Identifier` differs from the one in the request (check its Access-Requests in the FreeRADIUS log); or it hasn't sent a packet with `NAS-Identifier` since connecting (watchdog without it, no interim accounting) |
+| CoA reaches the wrong NAS | two NASes configured with the same `NAS-Identifier` |
 | CoA works for a few minutes after the NAS sends traffic, then 502 | no watchdog, so a NAT or load balancer dropped the idle connection, or `idle_timeout` closed it |
 | worker reports `CoaTimeout` but the NAS acted on the request | worker `timeoutMs` ≤ 7s; raise it ([step 5](#5-send-a-coa)) |
 | CoA intermittently 502 after scaling up | more than one replica; keep `replicas: 1` |

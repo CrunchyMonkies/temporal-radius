@@ -14,7 +14,8 @@ echo "--- 1. CoA before the NAS has connected: NAK 502 (no tunnel for that NAS)"
 out=$(printf 'User-Name = "alice"\nNAS-Identifier = "nas-01"\n' | rc freeradius:3799 coa worker-secret)
 check "NAK Proxy-Request-Not-Routable" "Error-Cause = Proxy-Request-Not-Routable" "$out"
 
-echo "--- 2. NAS dials out over RadSec (triggered by an Access-Request through it)"
+echo "--- 2. NAS dials out over RadSec (triggered by an Access-Request through it, which also"
+echo "    registers its NAS-Identifier nas-01 for CoA)"
 out=$(printf 'User-Name = "alice"\nUser-Password = "x"\n' | rc nas:1812 auth testing123)
 check "Access-Accept via RadSec -> upstream" "Received Access-Accept" "$out"
 
@@ -42,13 +43,14 @@ check "status probe" "exit=0" "$out"
 echo "--- 8. Keepalive: idle_timeout is ${IDLE:=45}s on the bench"
 echo "    nas-02 sends a Status-Server every 35s (longer than FreeRADIUS's built-in 30s client"
 echo "    idle_timeout, which sites/radsec must override); nas-03 sends one, then goes silent."
-echo "    Neither sends any other traffic, so only the watchdog registers them for reverse CoA."
-wnas() { # name interval duration [extra args]
+echo "    Both use the shared NAS certificate and put their NAS-Identifier in the watchdog; they"
+echo "    send no other traffic, so only the watchdog registers them for reverse CoA."
+wnas() { # name interval duration [extra args]; name is the NAS-Identifier, cert is the shared one
   n=$1 i=$2 d=$3; shift 3
   docker run --rm --network radsec-local_bench --add-host freeradius:172.31.83.10 \
-    -v "$PWD/watchdog-nas.py:/w/watchdog-nas.py:ro" -v "$PWD/certs/$n:/w/certs:ro" \
-    python:3-slim python -I /w/watchdog-nas.py --certs /w/certs --interval "$i" --duration "$d" "$@" \
-    > "/tmp/radsec-$n.log" 2>&1 &
+    -v "$PWD/watchdog-nas.py:/w/watchdog-nas.py:ro" -v "$PWD/certs/nas:/w/certs:ro" \
+    python:3-slim python -I /w/watchdog-nas.py --certs /w/certs --interval "$i" --duration "$d" \
+    --nas-identifier "$n" "$@" > "/tmp/radsec-$n.log" 2>&1 &
 }
 coa_to() { printf 'User-Name = "alice"\nNAS-Identifier = "%s"\n' "$1" | rc freeradius:3799 coa worker-secret; }
 wnas nas-02 35 $((IDLE + 15))
@@ -72,11 +74,21 @@ check "NAK 502 for an unresponsive NAS" "Received CoA-NAK" "$out"
 check "...within mrd + 2s (took ${took}s)" "ok" "$([ "$took" -le 8 ] && echo ok)"
 wait
 
-echo "--- 10. A NAS cannot claim another NAS's identity via Operator-Name"
-wnas nas-02 5 12 --operator-name +nas-03
+echo "--- 10. NASes sharing one certificate are told apart by NAS-Identifier"
+wnas nas-02 5 12
+wnas nas-03 5 12
 sleep 3
-check "nas-02 still reachable as itself" "Received CoA-ACK" "$(coa_to nas-02)"
-check "nas-03 not hijacked by nas-02" "Proxy-Request-Not-Routable" "$(coa_to nas-03)"
+check "CoA for nas-02 answered" "Received CoA-ACK" "$(coa_to nas-02)"
+check "CoA for nas-03 answered" "Received CoA-ACK" "$(coa_to nas-03)"
+wait
+check "nas-02 got exactly its own CoA" "^1$" "$(grep -c 'answered CoA' /tmp/radsec-nas-02.log)"
+check "nas-03 got exactly its own CoA" "^1$" "$(grep -c 'answered CoA' /tmp/radsec-nas-03.log)"
+# A watchdog without NAS-Identifier registers nothing; Operator-Name keys are stripped.
+# (The later --nas-identifier "" overrides the one wnas adds.)
+wnas nas-05 5 8 --nas-identifier "" --operator-name +nas-07
+sleep 3
+check "watchdog without NAS-Identifier is not routable" "Proxy-Request-Not-Routable" "$(coa_to nas-05)"
+check "Operator-Name key ignored" "Proxy-Request-Not-Routable" "$(coa_to nas-07)"
 wait
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

@@ -1,14 +1,13 @@
 #!/bin/sh
-# Generates a throwaway RadSec CA, server certificate and NAS client certificate for local testing.
-#   ./gen-certs.sh [nas-identifier] [server-name]
-# Output goes to ./certs/{server,nas,nas-02,nas-03}/{tls.crt,tls.key,ca.crt}; nas-02 / nas-03 are
-# used by the keepalive tests in test.sh. Never use these certificates in production.
+# Generates a throwaway RadSec CA, server certificate and one NAS client certificate that every
+# simulated NAS shares (NASes are told apart by NAS-Identifier, not by certificate).
+#   ./gen-certs.sh [server-name]
+# Output goes to ./certs/{server,nas}/{tls.crt,tls.key,ca.crt}. Never use these in production.
 set -eu
 
-NAS_ID=${1:-nas-01}
-SERVER_NAME=${2:-freeradius}
+SERVER_NAME=${1:-freeradius}
 cd "$(dirname "$0")"
-rm -rf certs && mkdir -p certs/server certs/nas certs/nas-02 certs/nas-03
+rm -rf certs && mkdir -p certs/server certs/nas
 cd certs
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=RadSec Test CA" \
@@ -26,12 +25,10 @@ issue() { # dir cn extendedKeyUsage san
 }
 
 issue server "$SERVER_NAME" serverAuth "DNS:$SERVER_NAME"
-# The CN is the reverse-CoA key: it must equal the NAS-Identifier the worker puts in CoA requests.
-issue nas "$NAS_ID" clientAuth "DNS:$NAS_ID"
-issue nas-02 nas-02 clientAuth "DNS:nas-02"
-issue nas-03 nas-03 clientAuth "DNS:nas-03"
+# Shared by every NAS; its CN plays no part in CoA routing.
+issue nas radsec-nas clientAuth "DNS:radsec-nas"
 
 # FreeRADIUS runs as uid 101 in the container; keys must be readable by it.
 chmod 644 */*
 rm -f ca.srl
-echo "certs written to $(pwd) (NAS CN = $NAS_ID)"
+echo "certs written to $(pwd)"

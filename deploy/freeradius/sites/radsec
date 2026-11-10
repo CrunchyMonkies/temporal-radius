@@ -8,10 +8,20 @@
 #  upstream RADIUS server, and CoA / Disconnect requests from the
 #  coa-relay site are sent back DOWN the same TLS connection.
 #
-#  Each connection is labelled with the CN of the NAS client
-#  certificate (Originating-Realm-Key). coa-relay routes a CoA to
-#  the connection whose key equals the request's NAS-Identifier, so
-#  every NAS certificate CN must equal that NAS's NAS-Identifier.
+#  Each connection is labelled with the NAS-Identifier of the packets
+#  the NAS sends over it (Originating-Realm-Key). coa-relay routes a
+#  CoA to the connection whose key equals the request's
+#  NAS-Identifier.  NASes may share one client certificate: the
+#  certificate only proves the NAS is allowed to connect, and the
+#  NAS-Identifier says which NAS it is.  So every NAS needs a unique
+#  NAS-Identifier, and anyone holding the certificate can claim any
+#  NAS-Identifier (and receive that NAS's CoA): protect its key.
+#
+#  A connection is reachable for CoA once FreeRADIUS has answered a
+#  packet from it that carried a NAS-Identifier: an Access-Request,
+#  an Accounting-Request, or a Status-Server watchdog if the NAS puts
+#  NAS-Identifier in it.  A connection keeps every key it has been
+#  given until it closes.
 #
 #  Keepalive: FreeRADIUS does not set SO_KEEPALIVE on accepted
 #  sockets, so liveness is application-level. The NAS sends
@@ -144,23 +154,29 @@ realm upstream {
 
 server radsec {
 	authorize {
-		#  Label this connection for reverse CoA.  Saved when the reply
-		#  is sent; a connection keeps its keys until it closes.
-		update control {
-			&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
+		#  Label this connection for reverse CoA with the NAS's
+		#  NAS-Identifier.  Saved when the reply is sent; a connection
+		#  keeps its keys until it closes.  Only plain names are used:
+		#  FreeRADIUS reads a leading "+" / "-" as add / delete.
+		if (&NAS-Identifier =~ /^[A-Za-z0-9][A-Za-z0-9._:@-]*$/) {
+			update control {
+				&Originating-Realm-Key := "%{NAS-Identifier}"
+			}
 		}
 
 		#  Watchdog / keepalive from the NAS.  Answering it keeps the
-		#  connection (and the NAT mapping) alive, and registers the
-		#  key straight after the NAS connects, before any user logs in.
+		#  connection (and the NAT mapping) alive.  If the NAS puts its
+		#  NAS-Identifier in the watchdog, this also registers the key
+		#  straight after it connects, before any user logs in.
 		Autz-Type Status-Server {
-			update control {
-				&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
+			if (&NAS-Identifier =~ /^[A-Za-z0-9][A-Za-z0-9._:@-]*$/) {
+				update control {
+					&Originating-Realm-Key := "%{NAS-Identifier}"
+				}
 			}
 			#  FreeRADIUS also registers any Operator-Name = "+name" in a
 			#  Status-Server as an extra key for this connection.  Delete it
-			#  so a NAS can only ever be reached under its certificate CN,
-			#  and cannot claim another NAS's CoA traffic.
+			#  so keys only ever come from NAS-Identifier.
 			update request {
 				&Operator-Name !* ANY
 			}
@@ -177,8 +193,12 @@ server radsec {
 	}
 
 	preacct {
+		if (&NAS-Identifier =~ /^[A-Za-z0-9][A-Za-z0-9._:@-]*$/) {
+			update control {
+				&Originating-Realm-Key := "%{NAS-Identifier}"
+			}
+		}
 		update control {
-			&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
 			&Proxy-To-Realm := upstream
 		}
 	}
