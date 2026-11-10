@@ -73,9 +73,14 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           volumeMounts:
-            # These replace the image's (empty) sites-enabled/ and mods-enabled/ entirely.
-            - { name: sites, mountPath: /etc/raddb/sites-enabled, readOnly: true }
-            - { name: mods, mountPath: /etc/raddb/mods-enabled, readOnly: true }
+            # One file at a time into the image's (empty) sites-enabled/ and mods-enabled/: kubelet
+            # makes a ConfigMap volume's own directory world-writable, and FreeRADIUS refuses to
+            # $INCLUDE a world-writable directory. subPath mounts don't see ConfigMap edits, but
+            # the generator's content hash rolls the pod on every change anyway.
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/radsec, subPath: radsec, readOnly: true }
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/coa-relay, subPath: coa-relay, readOnly: true }
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/status, subPath: status, readOnly: true }
+            - { name: mods, mountPath: /etc/raddb/mods-enabled/always, subPath: always, readOnly: true }
             - { name: radsec-tls, mountPath: /etc/raddb/radsec-tls, readOnly: true }
             - { name: run, mountPath: /var/run/radiusd }
             - { name: log, mountPath: /var/log/radius }

@@ -31,12 +31,16 @@ services:
       UPSTREAM_RADIUS_HOST: upstream
       UPSTREAM_RADIUS_AUTH_PORT: "1812"
       UPSTREAM_RADIUS_SECRET: upstream-secret
-      # Short so test.sh can watch a silent connection get reaped; production uses 120.
-      RADSEC_IDLE_TIMEOUT: "20"
+      # Short so test.sh can watch a silent connection get reaped; production uses 120. Above 30
+      # so the test also catches FreeRADIUS's built-in 30s client idle_timeout.
+      RADSEC_IDLE_TIMEOUT: "45"
     volumes:
-      # Same layout as the Kubernetes Deployment: our sites/mods replace the stock directories.
-      - ../mods:/etc/raddb/mods-enabled:ro
-      - ../sites:/etc/raddb/sites-enabled:ro
+      # Same layout as the Kubernetes Deployment: one file at a time into the image's own
+      # sites-enabled/ and mods-enabled/.
+      - ../mods/always:/etc/raddb/mods-enabled/always:ro
+      - ../sites/radsec:/etc/raddb/sites-enabled/radsec:ro
+      - ../sites/coa-relay:/etc/raddb/sites-enabled/coa-relay:ro
+      - ../sites/status:/etc/raddb/sites-enabled/status:ro
       - ./certs/server:/etc/raddb/radsec-tls:ro
     networks: { bench: { ipv4_address: 172.31.83.10 } }
     # Same check as the Kubernetes probes; lets `docker compose up --wait` block until ready.

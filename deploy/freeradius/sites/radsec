@@ -91,12 +91,27 @@ clients radsec {
 		proto = tls
 		secret = radsec
 		reverse_coa = yes
+		#  Client limits apply ON TOP of the listen limits (the
+		#  smaller idle_timeout wins) and default to max_connections
+		#  = 16 and idle_timeout = 30.  Every NAS matches this one
+		#  client, so those defaults would cap ALL NASes at 16
+		#  connections and drop each one 30s after its last packet.
+		limit {
+			max_connections = 0
+			lifetime = 0
+			idle_timeout = $ENV{RADSEC_IDLE_TIMEOUT}
+		}
 	}
 	client any-v6 {
 		ipv6addr = ::/0
 		proto = tls
 		secret = radsec
 		reverse_coa = yes
+		limit {
+			max_connections = 0
+			lifetime = 0
+			idle_timeout = $ENV{RADSEC_IDLE_TIMEOUT}
+		}
 	}
 }
 

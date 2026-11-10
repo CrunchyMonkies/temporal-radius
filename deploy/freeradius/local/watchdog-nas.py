@@ -66,6 +66,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--server", default="freeradius")
     p.add_argument("--port", type=int, default=2083)
+    p.add_argument("--server-name", help="name to verify in the server certificate (default: --server)")
     p.add_argument("--certs", required=True, help="dir with tls.crt, tls.key, ca.crt")
     p.add_argument("--interval", type=float, default=30)
     p.add_argument("--duration", type=float, default=60)
@@ -75,7 +76,7 @@ def main():
 
     ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=f"{a.certs}/ca.crt")
     ctx.load_cert_chain(f"{a.certs}/tls.crt", f"{a.certs}/tls.key")
-    conn = ctx.wrap_socket(socket.create_connection((a.server, a.port), 5), server_hostname=a.server)
+    conn = ctx.wrap_socket(socket.create_connection((a.server, a.port), 5), server_hostname=a.server_name or a.server)
     conn.settimeout(None)
     log(f"connected to {a.server}:{a.port} ({conn.version()})")
     lock = threading.Lock()

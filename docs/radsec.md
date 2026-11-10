@@ -133,7 +133,18 @@ a `RADIUS_SECRET` key.
    kubectl -n radius-coa-test rollout status deploy/freeradius
    kubectl -n radius-coa-test get svc freeradius-radsec    # EXTERNAL-IP is what NASes connect to
    ```
-5. Point the DNS name from the server certificate at the `freeradius-radsec` external IP.
+   On bne1-cluster1 the EXTERNAL-IP stays `<pending>`: kube-vip only assigns the address (the
+   `kube-vip.io/loadbalancerIPs` annotation) and Calico advertises only what is in the status.
+   Patch it in, as the cluster's other LoadBalancer services do:
+   ```sh
+   IP=$(kubectl -n radius-coa-test get svc freeradius-radsec \
+     -o jsonpath='{.metadata.annotations.kube-vip\.io/loadbalancerIPs}')
+   kubectl -n radius-coa-test patch svc freeradius-radsec --subresource=status --type=merge \
+     -p "{\"status\":{\"loadBalancer\":{\"ingress\":[{\"ip\":\"$IP\",\"ipMode\":\"VIP\"}]}}}"
+   ```
+5. Allow `2083/tcp` to that address on every firewall between the NASes and the cluster (the
+   bne1 LAN router only forwards 80/443 to the LoadBalancer range), and point the DNS name from
+   the server certificate at it.
 
 Notes on the manifest:
 
@@ -147,6 +158,9 @@ Notes on the manifest:
 * **NetworkPolicy:** `2083/tcp` is open to everyone (the certificate is the access control);
   `3799/udp` only accepts pods labelled `app: radius-coa-worker`. To limit which public
   addresses can reach RadSec, set `loadBalancerSourceRanges` on the Service.
+* **ConfigMaps are mounted file by file (`subPath`).** Kubelet makes a ConfigMap volume's own
+  directory world-writable, and FreeRADIUS refuses to start if `sites-enabled/` or
+  `mods-enabled/` is world-writable, so the volumes can't replace those directories.
 * **Sidecars:** the pod opts out of Istio injection. RadSec is already end-to-end TLS, and
   CoA is UDP.
 
@@ -181,6 +195,7 @@ the pieces are set, from the NAS inwards:
 | Cloud load balancer in front of the Service | e.g. ~350s on AWS NLB, 4 min default on Azure | keep it above 30s; the watchdog does the rest |
 | FreeRADIUS `limit { idle_timeout }` | `RADSEC_IDLE_TIMEOUT=120` | closes a connection after 120s with **no packet at all** (four missed watchdogs) |
 | FreeRADIUS `limit { lifetime }` | `0` | never recycles a healthy connection |
+| FreeRADIUS client `limit { }` | built-in defaults: `idle_timeout = 30`, `max_connections = 16` | set to the same values as the listener in both `clients radsec` entries; see below |
 
 Why it is set up this way:
 
@@ -197,6 +212,12 @@ Why it is set up this way:
   it after 120s of silence means CoA for that NAS fails fast with NAK 502 instead of waiting on a
   dead connection. The example `tls` config in FreeRADIUS uses `idle_timeout = 30`; don't copy
   it, because it closes connections between watchdogs.
+* **The client entries need their own `limit { }`.** FreeRADIUS applies client limits on top of
+  the listener's and uses the smaller idle timeout. Without the block, the built-in client
+  defaults apply: every connection closes 30s after its last packet, which with a 30s watchdog
+  means constant reconnects. And because every NAS matches the same `0.0.0.0/0` client, at most
+  16 NASes could be connected at once. The test on bne1-cluster1 hit the 30s close before this
+  was fixed.
 * If you change the watchdog interval, keep `RADSEC_IDLE_TIMEOUT` at least four times larger.
 
 The test bench checks this behaviour: a NAS that sends only watchdogs stays reachable past the
@@ -241,7 +262,10 @@ What comes back:
 A NAK is normally a successful activity result with `acked: false`. The exception is any
 Error-Cause listed in the worker's `RADIUS_RETRY_ERROR_CAUSES` (default `502`): the activity fails
 with the retryable `CoaNakRetryable` instead, so Temporal's retry policy waits out a NAS that is
-reconnecting. `SendCoaWorkflow` makes 5 attempts with 1s-16s backoff, roughly 30-65s in total.
+reconnecting. `SendCoaWorkflow` makes 5 attempts with 1s, 2s, 4s and 8s between them: about 15s
+in total when FreeRADIUS has no connection (it NAKs at once), up to about 50s when the NAS is
+connected but doesn't answer (each attempt waits out `mrd`). A NAS that takes longer than that to
+reconnect needs a calling workflow with a longer retry policy.
 If every attempt gets 502, the workflow fails with `CoaNakRetryable`.
 
 ## Testing locally
@@ -277,7 +301,8 @@ To watch FreeRADIUS make decisions, run it in debug mode:
 | symptom | likely cause |
 |---|---|
 | `Invalid type "auth+acct+coa"` | an image built without `WITH_COA_TUNNEL`, e.g. the official one |
-| `Failed resolving "..." to IPv4 address` at startup | `UPSTREAM_RADIUS_HOST` doesn't resolve yet; the pod restarts until it does |
+| `Failed resolving "..." to IPv4 address` at startup | `UPSTREAM_RADIUS_HOST` doesn't resolve yet; the pod restarts until it does. Check the cluster domain: bne1-cluster1 uses `cluster1.bne1.ouchi.com.au`, not `cluster.local` |
+| `Directory /etc/raddb/mods-enabled/ is globally writable` | a ConfigMap mounted over the whole directory; mount each file with `subPath` |
 | NAS can't connect, TLS errors in the log | NAS certificate not issued by the RadSec CA, or missing `clientAuth`; CA without `keyUsage` (strict TLS stacks reject it) |
 | every CoA gets NAK 502 | certificate CN ≠ `NAS-Identifier` in the request; or the NAS hasn't sent anything since connecting (enable the watchdog) |
 | CoA works for a few minutes after the NAS sends traffic, then 502 | no watchdog, so a NAT or load balancer dropped the idle connection, or `idle_timeout` closed it |

@@ -39,9 +39,10 @@ echo "--- 7. Health probe"
 out=$(docker compose exec -T freeradius sh -c 'echo "Message-Authenticator = 0x00" | radclient -q -r 1 -t 2 127.0.0.1:18121 status probe' 2>&1; echo "exit=$?")
 check "status probe" "exit=0" "$out"
 
-echo "--- 8. Keepalive: idle_timeout is ${IDLE:=20}s on the bench"
-echo "    nas-02 sends a Status-Server every 5s; nas-03 sends one, then goes silent. Neither sends"
-echo "    any other traffic, so only the watchdog registers them for reverse CoA."
+echo "--- 8. Keepalive: idle_timeout is ${IDLE:=45}s on the bench"
+echo "    nas-02 sends a Status-Server every 35s (longer than FreeRADIUS's built-in 30s client"
+echo "    idle_timeout, which sites/radsec must override); nas-03 sends one, then goes silent."
+echo "    Neither sends any other traffic, so only the watchdog registers them for reverse CoA."
 wnas() { # name interval duration [extra args]
   n=$1 i=$2 d=$3; shift 3
   docker run --rm --network radsec-local_bench --add-host freeradius:172.31.83.10 \
@@ -50,7 +51,7 @@ wnas() { # name interval duration [extra args]
     > "/tmp/radsec-$n.log" 2>&1 &
 }
 coa_to() { printf 'User-Name = "alice"\nNAS-Identifier = "%s"\n' "$1" | rc freeradius:3799 coa worker-secret; }
-wnas nas-02 5 $((IDLE + 15))
+wnas nas-02 35 $((IDLE + 15))
 wnas nas-03 0 $((IDLE + 15))
 sleep 5
 check "watchdog alone registers the NAS" "Received CoA-ACK" "$(coa_to nas-02)"
