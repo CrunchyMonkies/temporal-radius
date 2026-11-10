@@ -123,7 +123,10 @@ export type ErrorCause =
   | 507 // RequestInitiated
   | 508; // MultipleSessionSelectionUnsupported
 
-/** Output of `actRadiusCoa` / `SendCoaWorkflow`. A NAK is a *successful* result with `acked: false`. */
+/**
+ * Output of `actRadiusCoa` / `SendCoaWorkflow`. A NAK is a *successful* result with `acked: false`,
+ * unless its Error-Cause is in `RADIUS_RETRY_ERROR_CAUSES` (then it fails with `CoaNakRetryable`).
+ */
 export interface CoaResult {
   code: CoaReplyCode;
   /** `true` for CoA-ACK / Disconnect-ACK. */
@@ -146,12 +149,15 @@ export interface CoaResult {
  * - `CoaReplyVerificationFailed`  non-retryable: reply authenticator mismatch (wrong secret?)
  * - `CoaTimeout`                  retryable: no reply after all retransmissions
  * - `CoaNetworkError`             retryable: DNS / socket error
+ * - `CoaNakRetryable`             retryable: NAK with an Error-Cause in `RADIUS_RETRY_ERROR_CAUSES`
+ *                                 (default 502, e.g. the RadSec relay has no connection to the NAS)
  */
 export type CoaFailureType =
   | 'InvalidCoaRequest'
   | 'CoaReplyVerificationFailed'
   | 'CoaTimeout'
-  | 'CoaNetworkError';
+  | 'CoaNetworkError'
+  | 'CoaNakRetryable';
 
 /** Activity interface for `proxyActivities<RadiusCoaActivities>()`. */
 export interface RadiusCoaActivities {
@@ -184,6 +190,8 @@ export interface RadiusCoaWorkerEnv {
   RADIUS_TIMEOUT_MS?: string;
   /** Default `2`. */
   RADIUS_RETRIES?: string;
+  /** Comma-separated NAK Error-Causes treated as retryable failures. Default `502`; `none` disables. */
+  RADIUS_RETRY_ERROR_CAUSES?: string;
   /** Path to a FreeRADIUS-format dictionary replacing the embedded one. */
   RADIUS_DICTIONARY?: string;
   /** `coa-responder` mode only. Default `0.0.0.0:3799`. */

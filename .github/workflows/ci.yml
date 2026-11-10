@@ -27,3 +27,20 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Builds the reverse-CoA FreeRADIUS image and runs the RadSec bench against deploy/freeradius:
+  # CoA down a NAS-initiated connection, NAK relaying, and the Status-Server keepalive / idle reaping.
+  radsec-bench:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/freeradius/local
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./gen-certs.sh
+      - run: docker compose up -d --build --wait --wait-timeout 300 freeradius nas upstream tools
+      - run: ./test.sh
+      - if: failure()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down -v

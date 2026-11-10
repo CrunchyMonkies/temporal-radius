@@ -1,0 +1,186 @@
+# -*- text -*-
+######################################################################
+#
+#  RadSec (RADIUS/TLS, RFC 6614) listener for NASes, with reverse CoA.
+#
+#  NASes (usually behind NAT) connect OUT to tcp/2083. Their
+#  Access-Request / Accounting-Request traffic is proxied to the
+#  upstream RADIUS server, and CoA / Disconnect requests from the
+#  coa-relay site are sent back DOWN the same TLS connection.
+#
+#  Each connection is labelled with the CN of the NAS client
+#  certificate (Originating-Realm-Key). coa-relay routes a CoA to
+#  the connection whose key equals the request's NAS-Identifier, so
+#  every NAS certificate CN must equal that NAS's NAS-Identifier.
+#
+#  Keepalive: FreeRADIUS does not set SO_KEEPALIVE on accepted
+#  sockets, so liveness is application-level. The NAS sends
+#  Status-Server (RFC 5997) every RADSEC_WATCHDOG seconds (30s
+#  recommended); that traffic keeps NAT / load-balancer mappings
+#  alive and refreshes the connection's idle timer. idle_timeout
+#  reaps connections that stop sending anything (a NAS that vanished
+#  behind a NAT never sends a FIN), so the reverse-CoA key does not
+#  point at a dead socket for long.
+#
+######################################################################
+
+listen {
+	ipaddr = *
+	port = 2083
+	proto = tcp
+
+	#  "+coa" lets this listener send CoA / Disconnect requests back
+	#  down connections the NASes opened.  Requires TLS.
+	type = auth+acct+coa
+
+	virtual_server = radsec
+	clients = radsec
+
+	#  Recover gracefully if a TLS connection blocks at the network layer.
+	nonblock = yes
+
+	limit {
+		#  0 = no limit.  Every NAS holds one connection permanently.
+		max_connections = 0
+
+		#  Never recycle a healthy connection: every reconnect is a
+		#  window in which CoA for that NAS fails.
+		lifetime = 0
+
+		#  Close a connection after this many seconds without ANY
+		#  packet from the NAS (Status-Server counts).  Must be well
+		#  above the NAS watchdog interval: 120s = 4 missed 30s
+		#  watchdogs.  Do NOT use the example config's 30s here.
+		idle_timeout = $ENV{RADSEC_IDLE_TIMEOUT}
+	}
+
+	#  Retransmission timers for CoA sent down the tunnel (RFC 5080).
+	#  Keep mrd below the worker's per-attempt timeout x attempts.
+	coa {
+		irt = 2
+		mrt = 4
+		mrc = 2
+		mrd = 6
+	}
+
+	tls {
+		certificate_file = ${confdir}/radsec-tls/tls.crt
+		private_key_file = ${confdir}/radsec-tls/tls.key
+		ca_file = ${confdir}/radsec-tls/ca.crt
+
+		#  Mutual TLS: the client certificate IS the NAS's identity.
+		require_client_cert = yes
+
+		tls_min_version = "1.2"
+		tls_max_version = "1.3"
+		cipher_list = "DEFAULT"
+		fragment_size = 8192
+
+		cache {
+			enable = no
+		}
+	}
+}
+
+clients radsec {
+	#  NAT hides NAS addresses, and many NASes can share one public IP,
+	#  so accept any source address and authenticate by certificate.
+	#  Restrict sources at the load balancer / NetworkPolicy instead.
+	client any-v4 {
+		ipaddr = 0.0.0.0/0
+		proto = tls
+		secret = radsec
+		reverse_coa = yes
+	}
+	client any-v6 {
+		ipv6addr = ::/0
+		proto = tls
+		secret = radsec
+		reverse_coa = yes
+	}
+}
+
+#
+#  Upstream RADIUS server that does the actual authentication and
+#  accounting.  Replace the "proxy to upstream" lines in the server
+#  below if this FreeRADIUS should authenticate locally instead.
+#
+home_server upstream {
+	type = auth+acct
+	ipaddr = $ENV{UPSTREAM_RADIUS_HOST}
+	port = $ENV{UPSTREAM_RADIUS_AUTH_PORT}
+	proto = udp
+	secret = $ENV{UPSTREAM_RADIUS_SECRET}
+	require_message_authenticator = yes
+	response_window = 10
+	status_check = none
+}
+
+home_server_pool upstream {
+	type = fail-over
+	home_server = upstream
+}
+
+realm upstream {
+	auth_pool = upstream
+	acct_pool = upstream
+	nostrip
+}
+
+server radsec {
+	authorize {
+		#  Label this connection for reverse CoA.  Saved when the reply
+		#  is sent; a connection keeps its keys until it closes.
+		update control {
+			&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
+		}
+
+		#  Watchdog / keepalive from the NAS.  Answering it keeps the
+		#  connection (and the NAT mapping) alive, and registers the
+		#  key straight after the NAS connects, before any user logs in.
+		Autz-Type Status-Server {
+			update control {
+				&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
+			}
+			#  FreeRADIUS also registers any Operator-Name = "+name" in a
+			#  Status-Server as an extra key for this connection.  Delete it
+			#  so a NAS can only ever be reached under its certificate CN,
+			#  and cannot claim another NAS's CoA traffic.
+			update request {
+				&Operator-Name !* ANY
+			}
+			ok
+		}
+
+		#  Proxy to upstream.
+		update control {
+			&Proxy-To-Realm := upstream
+		}
+	}
+
+	authenticate {
+	}
+
+	preacct {
+		update control {
+			&Originating-Realm-Key := "%{listen:TLS-Client-Cert-Common-Name}"
+			&Proxy-To-Realm := upstream
+		}
+	}
+
+	accounting {
+		ok
+	}
+
+	post-auth {
+		Post-Auth-Type REJECT {
+			ok
+		}
+	}
+
+	pre-proxy {
+	}
+
+	post-proxy {
+	}
+}

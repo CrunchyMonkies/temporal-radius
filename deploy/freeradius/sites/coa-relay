@@ -1,0 +1,60 @@
+# -*- text -*-
+######################################################################
+#
+#  CoA relay: receives plain RFC 5176 CoA / Disconnect requests from
+#  radius-coa-worker on udp/3799 and sends each one down the RadSec
+#  connection of the NAS named by its NAS-Identifier (see the radsec
+#  site).  The NAS's ACK / NAK is relayed back to the worker.
+#
+#  Replies generated here rather than by the NAS (all NAKs):
+#    Error-Cause 502 Proxy-Request-Not-Routable: no connection carries
+#        that NAS-Identifier (NAS offline, or reconnecting after a NAT /
+#        pod restart), or the NAS did not answer within the coa timers
+#        in the radsec listen section (mrd = 6s).  The worker fails these
+#        with the retryable CoaNakRetryable (RADIUS_RETRY_ERROR_CAUSES).
+#    Error-Cause 506 Proxy-Processing-Error: every connection for that
+#        NAS is busy.
+#    Error-Cause 402 Missing-Attribute: no NAS-Identifier in the request.
+#  The worker's per-attempt timeout (RADIUS_TIMEOUT_MS) must be longer
+#  than mrd, or it gives up before FreeRADIUS answers.
+#
+######################################################################
+
+listen {
+	type = coa
+	ipaddr = *
+	port = 3799
+	proto = udp
+	virtual_server = coa-relay
+	clients = coa-relay
+}
+
+clients coa-relay {
+	#  Only the worker should reach this port; enforced by the
+	#  NetworkPolicy in freeradius.yaml.
+	client worker {
+		ipaddr = 0.0.0.0/0
+		secret = $ENV{RADIUS_SECRET}
+		require_message_authenticator = yes
+	}
+}
+
+server coa-relay {
+	recv-coa {
+		if (!&NAS-Identifier) {
+			update reply {
+				&Error-Cause := Missing-Attribute
+			}
+			reject
+		}
+
+		update control {
+			&Proxy-To-Originating-Realm := "%{NAS-Identifier}"
+		}
+		ok
+	}
+
+	send-coa {
+		ok
+	}
+}

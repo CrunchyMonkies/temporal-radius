@@ -1,0 +1,13 @@
+# -*- text -*-
+#  The only modules these sites use: the "ok" / "reject" / "noop" return codes.
+#  Mounted as the whole mods-enabled directory, so none of the stock modules (eap, files, ...)
+#  are loaded; they need the default virtual servers, which this deployment replaces.
+always ok {
+	rcode = ok
+}
+always reject {
+	rcode = reject
+}
+always noop {
+	rcode = noop
+}

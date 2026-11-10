@@ -1,0 +1,72 @@
+# Local reverse-CoA test bench. From this directory:
+#   ./gen-certs.sh && docker compose up -d --build --wait && ./test.sh; docker compose down
+#
+# freeradius - the server under test, using the same sites/ and mods/ as the Kubernetes deployment
+# nas        - a FreeRADIUS acting as a RadSec NAS: dials OUT to freeradius:2083, answers CoA
+# upstream   - stand-in for the real authentication server
+# tools      - runs radclient for test.sh (stands in for radius-coa-worker)
+#
+# Fixed addresses + extra_hosts instead of service-name DNS, so the bench also works where
+# Docker's embedded DNS is unavailable (e.g. some WSL setups). No host ports are published.
+name: radsec-local
+
+x-freeradius: &freeradius
+  # ../image: FreeRADIUS built with reverse CoA. The NAS simulator needs it too (to accept CoA
+  # down its outbound connection), so every service uses it.
+  image: freeradius-radsec:dev
+  build: ../image
+  read_only: true
+  tmpfs: [/var/run/radiusd, /var/log/radius, /tmp]
+  restart: on-failure
+  extra_hosts:
+    - "freeradius:172.31.83.10"
+    - "nas:172.31.83.20"
+    - "upstream:172.31.83.30"
+
+services:
+  freeradius:
+    <<: *freeradius
+    environment:
+      RADIUS_SECRET: worker-secret
+      UPSTREAM_RADIUS_HOST: upstream
+      UPSTREAM_RADIUS_AUTH_PORT: "1812"
+      UPSTREAM_RADIUS_SECRET: upstream-secret
+      # Short so test.sh can watch a silent connection get reaped; production uses 120.
+      RADSEC_IDLE_TIMEOUT: "20"
+    volumes:
+      # Same layout as the Kubernetes Deployment: our sites/mods replace the stock directories.
+      - ../mods:/etc/raddb/mods-enabled:ro
+      - ../sites:/etc/raddb/sites-enabled:ro
+      - ./certs/server:/etc/raddb/radsec-tls:ro
+    networks: { bench: { ipv4_address: 172.31.83.10 } }
+    # Same check as the Kubernetes probes; lets `docker compose up --wait` block until ready.
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'Message-Authenticator = 0x00' | radclient -q -r 1 -t 2 127.0.0.1:18121 status probe"]
+      interval: 2s
+      retries: 30
+
+  nas:
+    <<: *freeradius
+    volumes:
+      - ../mods:/etc/raddb/mods-enabled:ro
+      - ./nas-sim:/etc/raddb/sites-enabled/nas-sim:ro
+      - ./certs/nas:/etc/raddb/nas-tls:ro
+    networks: { bench: { ipv4_address: 172.31.83.20 } }
+
+  upstream:
+    <<: *freeradius
+    volumes:
+      - ../mods:/etc/raddb/mods-enabled:ro
+      - ./upstream-sim:/etc/raddb/sites-enabled/upstream-sim:ro
+    networks: { bench: { ipv4_address: 172.31.83.30 } }
+
+  tools:
+    <<: *freeradius
+    entrypoint: ["sleep", "infinity"]
+    networks: { bench: { ipv4_address: 172.31.83.40 } }
+
+networks:
+  bench:
+    ipam:
+      config:
+        - subnet: 172.31.83.0/24

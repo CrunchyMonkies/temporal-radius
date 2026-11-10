@@ -27,6 +27,7 @@ TypeScript types for calling these from TS workflows and clients are in
 | `RADIUS_COA_PORT` | `3799` | default NAS port when the request omits `nasPort` |
 | `RADIUS_TIMEOUT_MS` | `3000` | per-transmission timeout |
 | `RADIUS_RETRIES` | `2` | retransmissions per activity attempt |
+| `RADIUS_RETRY_ERROR_CAUSES` | `502` | comma-separated NAK Error-Causes that fail the activity with the retryable `CoaNakRetryable` instead of returning the NAK; `none` disables |
 | `RADIUS_DICTIONARY` | embedded | path to a FreeRADIUS-format dictionary that replaces the built-in one |
 | `COA_RESPONDER_BIND` | `0.0.0.0:3799` | `coa-responder` mode only |
 | `HEALTH_BIND` | `0.0.0.0:8080` | HTTP health endpoint; `off` disables it |
@@ -58,6 +59,9 @@ TypeScript types for calling these from TS workflows and clients are in
 ```
 
 * **NAK** is a successful result with `acked: false`, so the calling workflow decides what to do.
+  The exception is an Error-Cause in `RADIUS_RETRY_ERROR_CAUSES` (default `502` Request Not
+  Routable, which only a proxy such as the [RadSec relay](docs/radsec.md) sends): that fails with
+  the retryable `CoaNakRetryable`.
 * **Timeouts and network errors** fail with the retryable `CoaTimeout` / `CoaNetworkError`.
 * **Invalid input** (`InvalidCoaRequest`) and replies that fail authenticator checks
   (`CoaReplyVerificationFailed`, usually a wrong secret) are **non-retryable**.
@@ -101,6 +105,13 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 The Dockerfile cross-compiles with `cargo-zigbuild` on the build host, so building for arm64
 needs no QEMU. Pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches both musl
 binaries to a GitHub Release and pushes a multi-arch image to `ghcr.io/crunchymonkies/temporal-radius`.
+
+## RadSec / NASes behind NAT
+
+The worker sends plain UDP CoA. To reach NASes that connect over RadSec (RADIUS/TLS), including
+NASes behind NAT that can only connect out, send CoA through the FreeRADIUS relay in
+`deploy/freeradius`: it delivers each request down the NAS's own TLS connection ("reverse CoA").
+See [docs/radsec.md](docs/radsec.md) for setup, NAS keepalive settings and the local test bench.
 
 ## Kubernetes smoke test
 

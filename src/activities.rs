@@ -20,7 +20,8 @@ impl RadiusActivities {
 impl RadiusActivities {
     /// Sends a CoA-Request (or Disconnect-Request) to a NAS and waits for the ACK/NAK.
     ///
-    /// A NAK is a successful activity result (`acked: false`); timeouts and network errors are
+    /// A NAK is a successful activity result (`acked: false`), except for Error-Causes in
+    /// `RADIUS_RETRY_ERROR_CAUSES` (default 502), which, like timeouts and network errors, are
     /// retryable failures; invalid input and reply-verification failures are non-retryable.
     #[activity(name = "actRadiusCoa")]
     pub async fn act_radius_coa(
@@ -55,6 +56,7 @@ fn to_failure(err: CoaError) -> ApplicationFailure {
         CoaError::BadReply { .. } => "CoaReplyVerificationFailed",
         CoaError::Timeout { .. } => "CoaTimeout",
         CoaError::Io { .. } => "CoaNetworkError",
+        CoaError::RetryableNak { .. } => "CoaNakRetryable",
     };
     let retryable = err.is_retryable();
     ApplicationFailure::builder(err).type_name(type_name.to_string()).non_retryable(!retryable).build()

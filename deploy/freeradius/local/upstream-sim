@@ -1,0 +1,43 @@
+# -*- text -*-
+#  Stand-in for the real upstream RADIUS server: accepts every Access-Request
+#  and Accounting-Request from the freeradius container.
+
+listen {
+	type = auth
+	ipaddr = *
+	port = 1812
+	virtual_server = upstream-sim
+	clients = upstream-sim
+}
+
+listen {
+	type = acct
+	ipaddr = *
+	port = 1813
+	virtual_server = upstream-sim
+	clients = upstream-sim
+}
+
+clients upstream-sim {
+	client any {
+		ipaddr = 0.0.0.0/0
+		secret = upstream-secret
+	}
+}
+
+server upstream-sim {
+	authorize {
+		update control {
+			&Auth-Type := Accept
+		}
+	}
+	authenticate {
+	}
+	preacct {
+	}
+	accounting {
+		ok
+	}
+	post-auth {
+	}
+}
