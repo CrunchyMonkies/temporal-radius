@@ -11,3 +11,7 @@ always reject {
 always noop {
 	rcode = noop
 }
+
+#  For %{tolower:...} in policy/radsec_coa_keys.
+expr {
+}

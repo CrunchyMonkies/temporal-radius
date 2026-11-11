@@ -81,6 +81,8 @@ spec:
             - { name: sites, mountPath: /etc/raddb/sites-enabled/coa-relay, subPath: coa-relay, readOnly: true }
             - { name: sites, mountPath: /etc/raddb/sites-enabled/status, subPath: status, readOnly: true }
             - { name: mods, mountPath: /etc/raddb/mods-enabled/always, subPath: always, readOnly: true }
+            # Added to the image's stock policy.d/.
+            - { name: policy, mountPath: /etc/raddb/policy.d/radsec_coa_keys, subPath: radsec_coa_keys, readOnly: true }
             - { name: radsec-tls, mountPath: /etc/raddb/radsec-tls, readOnly: true }
             - { name: run, mountPath: /var/run/radiusd }
             - { name: log, mountPath: /var/log/radius }
@@ -90,6 +92,8 @@ spec:
           configMap: { name: freeradius-sites }
         - name: mods
           configMap: { name: freeradius-mods }
+        - name: policy
+          configMap: { name: freeradius-policy }
         # tls.crt / tls.key / ca.crt (kubernetes.io/tls or cert-manager layout). FreeRADIUS reads
         # them at startup only: restart the Deployment after the certificate is renewed.
         - name: radsec-tls

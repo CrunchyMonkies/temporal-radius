@@ -27,7 +27,8 @@ Everything lives in [`deploy/freeradius`](../deploy/freeradius):
 | `sites/radsec` | RadSec listener, NAS identification, keepalive limits, proxying to upstream |
 | `sites/coa-relay` | UDP CoA listener for the worker; routes each request to a NAS connection |
 | `sites/status` | loopback Status-Server listener used by the Kubernetes probes |
-| `mods/always` | the only module the sites use |
+| `mods/always` | the only modules the sites use (`ok`/`reject`/`noop`, and `expr` for `%{tolower:}`) |
+| `policy/radsec_coa_keys` | computes the routing keys; shared by `radsec` and `coa-relay` so both compute them the same way |
 | `freeradius.yaml`, `kustomization.yaml` | Deployment, Services, NetworkPolicy, generated ConfigMaps |
 | `local/` | Docker Compose test bench with a simulated NAS ([Testing locally](#testing-locally)) |
 
@@ -37,22 +38,38 @@ Everything lives in [`deploy/freeradius`](../deploy/freeradius):
    share one certificate: it only proves the NAS may connect.
 2. When FreeRADIUS answers a packet from the NAS that carries a `NAS-Identifier` (an
    Access-Request, an Accounting-Request, or a Status-Server watchdog that includes it), it
-   labels that TLS connection with the **`NAS-Identifier`**.
+   labels that TLS connection with the **`NAS-Identifier`**. If the packet also has a
+   `Called-Station-Id`, the connection gets a second label, **`<NAS-Identifier>/<called>`**.
 3. The worker sends an ordinary RFC 5176 CoA-Request to `freeradius-coa:3799` with the same
-   `NAS-Identifier`.
-4. FreeRADIUS sends the request down the connection with that label. The NAS's ACK or NAK
+   `NAS-Identifier`, and `Called-Station-Id` when it is needed to pick the device.
+4. FreeRADIUS sends the request down the connection with the matching label:
+   `<NAS-Identifier>/<called>` if the request has a `Called-Station-Id`, otherwise
+   `<NAS-Identifier>`. The NAS's ACK or NAK
    travels back the same way and is relayed to the worker.
 
 Rules that follow from this:
 
-* **Every NAS needs a unique `NAS-Identifier`.** If two NASes use the same one, a CoA for either
-  goes to whichever connection FreeRADIUS picks.
+* **Devices that share a `NAS-Identifier` must be addressed with `Called-Station-Id`.** Each
+  device's connection is labelled with every `Called-Station-Id` it has sent, so a CoA carrying
+  `NAS-Identifier` and `Called-Station-Id` reaches the device that sent that pair. A CoA with only
+  the shared `NAS-Identifier` goes to whichever of those devices FreeRADIUS picks. A request with
+  a `Called-Station-Id` never falls back to the `NAS-Identifier` alone: if no device has sent that
+  pair, it is NAKed with 502.
+* **`<called>` is normalised.** If `Called-Station-Id` starts with a MAC address, only the MAC is
+  used, as lowercase hex without separators, so `AA-BB-CC-DD-EE-FF:Guest WiFi`,
+  `aa:bb:cc:dd:ee:ff` and `aabb.ccdd.eeff` all match each other. Copying the value from the
+  session's accounting is enough; the `:SSID` suffix doesn't have to match. Any other value is
+  used lowercased if it is a plain name (see below); otherwise the CoA is NAKed with 407.
+* **A device is only reachable by `Called-Station-Id` once it has sent that value** on the
+  current connection, normally in an Access-Request or Accounting-Request. Watchdogs rarely carry
+  it, so after a reconnect a device is reachable by `NAS-Identifier`/`Called-Station-Id` only
+  after its next login or interim update for that SSID/radio. Keep interim accounting on.
 * **A NAS is reachable once it has sent a packet with its `NAS-Identifier` on the current
   connection.** If its watchdog doesn't include `NAS-Identifier`, that is its first Access-Request
   or Accounting-Request after (re)connecting. Enable interim accounting so a quiet NAS
   re-registers soon after a reconnect or a FreeRADIUS restart.
-* **Anyone holding the shared certificate can claim any `NAS-Identifier`** and so receive that
-  NAS's CoA requests. The certificate's private key is what protects the system: keep it off
+* **Anyone holding the shared certificate can claim any `NAS-Identifier` and `Called-Station-Id`**
+  and so receive that NAS's CoA requests. The certificate's private key is what protects the system: keep it off
   anything that isn't one of your NASes, and if it leaks, replace the CA. (With one certificate
   per NAS you could bind each `NAS-Identifier` to its certificate; this setup doesn't.)
 * Labels must be plain names (letters, digits, `.`, `_`, `:`, `@`, `-`, starting with a letter or
@@ -184,7 +201,8 @@ Notes on the manifest:
 | shared secret | `radsec` (fixed by RFC 6614; security comes from TLS) |
 | client certificate / key | the shared NAS certificate |
 | trusted CA | the RadSec CA |
-| `NAS-Identifier` | **unique per NAS**; the value the worker puts in CoA requests |
+| `NAS-Identifier` | the value the worker puts in CoA requests; unique per NAS, or shared by several devices that each send a distinct `Called-Station-Id` |
+| `Called-Station-Id` | in Access-Request and accounting (most NASes send the AP MAC, often with `:SSID`); needed when devices share a `NAS-Identifier` |
 | Status-Server / watchdog | **on, every 30 seconds**, with `NAS-Identifier` in it if the NAS allows (see [Keepalive](#keepalive)) |
 | interim accounting | on, so a NAS whose watchdog lacks `NAS-Identifier` re-registers after a reconnect |
 | dynamic authorization (CoA) | accept CoA / Disconnect **on the RadSec connection the NAS opened**. Without this the setup cannot work |
@@ -250,10 +268,15 @@ kubectl -n radius-coa-test exec deploy/temporal-cli -c cli -- \
     "retries": 1,
     "attributes": [
       { "name": "NAS-Identifier", "value": "nas-01" },
+      { "name": "Called-Station-Id", "value": "AA-BB-CC-DD-EE-FF:Guest WiFi" },
       { "name": "User-Name", "value": "alice" },
       { "name": "Acct-Session-Id", "value": "0A0B0C0D" }
     ]}'
 ```
+
+Leave out `Called-Station-Id` when every NAS has its own `NAS-Identifier`. Include it, copied from
+the session's accounting, when several devices share one. It is forwarded to the NAS too, which
+RFC 5176 allows as a session identification attribute.
 
 * **`timeoutMs` must be longer than 7 seconds.** If the NAS doesn't answer, FreeRADIUS gives up
   after `mrd = 6` seconds (`coa { }` in `sites/radsec`) and NAKs. A shorter worker timeout
@@ -269,7 +292,8 @@ What comes back:
 | `CoA-NAK` / `Disconnect-NAK` | from the NAS, e.g. `503` | the NAS refused it (session not found, ...) | inspect `errorCause` |
 | `CoaNakRetryable` failure | `502` | FreeRADIUS has no connection for that `NAS-Identifier` (NAS offline, reconnecting, or hasn't sent a packet with that `NAS-Identifier` yet), or the NAS didn't answer within 6s | Temporal retries |
 | NAK | `506` | every connection for that NAS is busy | retry, or add `506` to `RADIUS_RETRY_ERROR_CAUSES` |
-| NAK | `402` | the request has no `NAS-Identifier` | fix the request |
+| NAK | `402` | the request has no `NAS-Identifier` (or it isn't a plain name) | fix the request |
+| NAK | `407` | `Called-Station-Id` is neither a MAC address nor a plain name | fix the request |
 | `CoaTimeout` failure | — | FreeRADIUS didn't answer (pod down, network) | Temporal retries |
 
 A NAK is normally a successful activity result with `acked: false`. The exception is any
@@ -320,7 +344,8 @@ To watch FreeRADIUS make decisions, run it in debug mode:
 | `Directory /etc/raddb/mods-enabled/ is globally writable` | a ConfigMap mounted over the whole directory; mount each file with `subPath` |
 | NAS can't connect, TLS errors in the log | NAS certificate not issued by the RadSec CA, or missing `clientAuth`; CA without `keyUsage` (strict TLS stacks reject it) |
 | every CoA gets NAK 502 | the NAS's own `NAS-Identifier` differs from the one in the request (check its Access-Requests in the FreeRADIUS log); or it hasn't sent a packet with `NAS-Identifier` since connecting (watchdog without it, no interim accounting) |
-| CoA reaches the wrong NAS | two NASes configured with the same `NAS-Identifier` |
+| CoA reaches the wrong NAS | devices share a `NAS-Identifier` and the request has no `Called-Station-Id` |
+| 502 only when `Called-Station-Id` is included | the device hasn't sent that MAC since (re)connecting, e.g. no login or interim accounting on that SSID/radio yet; or the MAC differs (check the device's Access-Requests in the FreeRADIUS log) |
 | CoA works for a few minutes after the NAS sends traffic, then 502 | no watchdog, so a NAT or load balancer dropped the idle connection, or `idle_timeout` closed it |
 | worker reports `CoaTimeout` but the NAS acted on the request | worker `timeoutMs` ≤ 7s; raise it ([step 5](#5-send-a-coa)) |
 | CoA intermittently 502 after scaling up | more than one replica; keep `replicas: 1` |

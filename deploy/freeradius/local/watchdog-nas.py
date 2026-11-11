@@ -20,18 +20,19 @@ import time
 SECRET = b"radsec"  # fixed shared secret for RADIUS/TLS (RFC 6614)
 STATUS_SERVER, ACCESS_ACCEPT = 12, 2
 DISCONNECT_REQUEST, COA_REQUEST = 40, 43
-NAS_IDENTIFIER, MESSAGE_AUTHENTICATOR, OPERATOR_NAME = 32, 80, 126
+CALLED_STATION_ID, NAS_IDENTIFIER, MESSAGE_AUTHENTICATOR, OPERATOR_NAME = 30, 32, 80, 126
 
 
 def log(msg):
     print(f"{time.monotonic() - START:6.1f}s {msg}", flush=True)
 
 
-def status_server(ident, nas_identifier=None, operator_name=None):
+def status_server(ident, nas_identifier=None, operator_name=None, called_station_id=None):
     # Code | Id | Length | Request Authenticator | Message-Authenticator (HMAC-MD5 over the packet with it zeroed)
     auth = os.urandom(16)
     attrs = bytes([MESSAGE_AUTHENTICATOR, 18]) + bytes(16)
-    for attr, text in ((NAS_IDENTIFIER, nas_identifier), (OPERATOR_NAME, operator_name)):
+    for attr, text in ((NAS_IDENTIFIER, nas_identifier), (OPERATOR_NAME, operator_name),
+                       (CALLED_STATION_ID, called_station_id)):
         if text:
             value = text.encode()
             attrs += bytes([attr, 2 + len(value)]) + value
@@ -72,6 +73,7 @@ def main():
     p.add_argument("--interval", type=float, default=30)
     p.add_argument("--duration", type=float, default=60)
     p.add_argument("--nas-identifier", help="NAS-Identifier to put in watchdogs (registers it for CoA)")
+    p.add_argument("--called-station-id", help="Called-Station-Id to put in watchdogs")
     p.add_argument("--ignore-coa", action="store_true", help="never answer CoA (an unresponsive NAS)")
     p.add_argument("--operator-name", help='add Operator-Name to watchdogs, e.g. "+nas-07" (should be ignored)')
     a = p.parse_args()
@@ -90,7 +92,7 @@ def main():
     def watchdog():
         ident = 0
         while True:
-            send(status_server(ident, a.nas_identifier, a.operator_name))
+            send(status_server(ident, a.nas_identifier, a.operator_name, a.called_station_id))
             log(f"sent Status-Server id={ident}")
             ident = (ident + 1) % 256
             if a.interval <= 0:

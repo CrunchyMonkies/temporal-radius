@@ -19,6 +19,9 @@ configMapGenerator:
   - name: freeradius-mods
     files:
       - mods/always
+  - name: freeradius-policy
+    files:
+      - policy/radsec_coa_keys
   - name: freeradius-env
     literals:
       - UPSTREAM_RADIUS_HOST=radius.example.internal

@@ -47,15 +47,19 @@ echo "    Both use the shared NAS certificate and put their NAS-Identifier in th
 echo "    send no other traffic, so only the watchdog registers them for reverse CoA."
 wnas() { # name interval duration [extra args]; name is the NAS-Identifier, cert is the shared one
   n=$1 i=$2 d=$3; shift 3
+  : > "/tmp/radsec-$n.log"   # truncate now, so ready() never sees an earlier run's log
   docker run --rm --network radsec-local_bench --add-host freeradius:172.31.83.10 \
     -v "$PWD/watchdog-nas.py:/w/watchdog-nas.py:ro" -v "$PWD/certs/nas:/w/certs:ro" \
     python:3-slim python -I /w/watchdog-nas.py --certs /w/certs --interval "$i" --duration "$d" \
     --nas-identifier "$n" "$@" > "/tmp/radsec-$n.log" 2>&1 &
 }
+# Wait (up to 20s) until each named NAS has had its first watchdog answered: starting the
+# containers can take longer than a fixed sleep.
+ready() { for n; do i=0; until grep -q "watchdog answered" "/tmp/radsec-$n.log" 2>/dev/null || [ $i -ge 40 ]; do sleep 0.5; i=$((i + 1)); done; done; }
 coa_to() { printf 'User-Name = "alice"\nNAS-Identifier = "%s"\n' "$1" | rc freeradius:3799 coa worker-secret; }
 wnas nas-02 35 $((IDLE + 15))
 wnas nas-03 0 $((IDLE + 15))
-sleep 5
+ready nas-02 nas-03
 check "watchdog alone registers the NAS" "Received CoA-ACK" "$(coa_to nas-02)"
 check "silent NAS reachable before idle_timeout" "Received CoA-ACK" "$(coa_to nas-03)"
 sleep $((IDLE + 3))
@@ -66,7 +70,7 @@ for n in nas-02 nas-03; do echo "    $n:"; sed 's/^/      /' "/tmp/radsec-$n.log
 
 echo "--- 9. Connected NAS that never answers: FreeRADIUS gives up after mrd (6s) and NAKs"
 wnas nas-02 5 15 --ignore-coa
-sleep 3
+ready nas-02
 start=$(date +%s)
 out=$(printf 'User-Name = "alice"\nNAS-Identifier = "nas-02"\n' | docker compose exec -T tools radclient -x -r 1 -t 15 freeradius:3799 coa worker-secret 2>&1)
 took=$(( $(date +%s) - start ))
@@ -77,7 +81,7 @@ wait
 echo "--- 10. NASes sharing one certificate are told apart by NAS-Identifier"
 wnas nas-02 5 12
 wnas nas-03 5 12
-sleep 3
+ready nas-02 nas-03
 check "CoA for nas-02 answered" "Received CoA-ACK" "$(coa_to nas-02)"
 check "CoA for nas-03 answered" "Received CoA-ACK" "$(coa_to nas-03)"
 wait
@@ -86,9 +90,30 @@ check "nas-03 got exactly its own CoA" "^1$" "$(grep -c 'answered CoA' /tmp/rads
 # A watchdog without NAS-Identifier registers nothing; Operator-Name keys are stripped.
 # (The later --nas-identifier "" overrides the one wnas adds.)
 wnas nas-05 5 8 --nas-identifier "" --operator-name +nas-07
-sleep 3
+ready nas-05
 check "watchdog without NAS-Identifier is not routable" "Proxy-Request-Not-Routable" "$(coa_to nas-05)"
 check "Operator-Name key ignored" "Proxy-Request-Not-Routable" "$(coa_to nas-07)"
 wait
+
+echo "--- 11. Devices sharing a NAS-Identifier, told apart by Called-Station-Id"
+coa_cs() { printf 'User-Name = "alice"\nNAS-Identifier = "%s"\nCalled-Station-Id = "%s"\n' "$1" "$2" | rc freeradius:3799 coa worker-secret; }
+# nas-01 registers nas-01/aabbcc000001 from an Access-Request; the MAC is normalised, SSID dropped.
+out=$(printf 'User-Name = "alice"\nUser-Password = "x"\nCalled-Station-Id = "AA-BB-CC-00-00-01:Guest WiFi"\n' | rc nas:1812 auth testing123)
+check "Access-Request with Called-Station-Id" "Received Access-Accept" "$out"
+check "CoA by NAS-Identifier + Called-Station-Id (other MAC format)" "Received CoA-ACK" "$(coa_cs nas-01 aa:bb:cc:00:00:01)"
+check "unknown Called-Station-Id is not routed (no fallback)" "Proxy-Request-Not-Routable" "$(coa_cs nas-01 aa:bb:cc:00:00:09)"
+check "unusable Called-Station-Id rejected" "Invalid-Attribute-Value" "$(coa_cs nas-01 'not a mac!')"
+wnas site-a 5 12 --called-station-id 02-00-00-00-00-0A:Corp
+cp /dev/null /tmp/radsec-site-a-2.log
+docker run --rm --network radsec-local_bench --add-host freeradius:172.31.83.10 \
+  -v "$PWD/watchdog-nas.py:/w/watchdog-nas.py:ro" -v "$PWD/certs/nas:/w/certs:ro" \
+  python:3-slim python -I /w/watchdog-nas.py --certs /w/certs --interval 5 --duration 12 \
+  --nas-identifier site-a --called-station-id 02-00-00-00-00-0B:Corp > /tmp/radsec-site-a-2.log 2>&1 &
+ready site-a site-a-2
+check "CoA for site-a / ...0a answered" "Received CoA-ACK" "$(coa_cs site-a 02:00:00:00:00:0a)"
+check "CoA for site-a / ...0b answered" "Received CoA-ACK" "$(coa_cs site-a 0200.0000.000b)"
+wait
+check "device ...0a got exactly its own CoA" "^1$" "$(grep -c 'answered CoA' /tmp/radsec-site-a.log)"
+check "device ...0b got exactly its own CoA" "^1$" "$(grep -c 'answered CoA' /tmp/radsec-site-a-2.log)"
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

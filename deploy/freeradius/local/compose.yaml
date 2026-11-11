@@ -41,6 +41,7 @@ services:
       - ../sites/radsec:/etc/raddb/sites-enabled/radsec:ro
       - ../sites/coa-relay:/etc/raddb/sites-enabled/coa-relay:ro
       - ../sites/status:/etc/raddb/sites-enabled/status:ro
+      - ../policy/radsec_coa_keys:/etc/raddb/policy.d/radsec_coa_keys:ro
       - ./certs/server:/etc/raddb/radsec-tls:ro
     networks: { bench: { ipv4_address: 172.31.83.10 } }
     # Same check as the Kubernetes probes; lets `docker compose up --wait` block until ready.
