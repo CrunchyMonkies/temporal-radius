@@ -1,0 +1,145 @@
+# Single-replica FreeRADIUS terminating RadSec from NASes (typically behind NAT) and relaying
+# radius-coa-worker's CoA / Disconnect requests down those connections (reverse CoA).
+# Setup and usage: docs/radsec.md.
+#
+# One replica on purpose: each NAS's TLS connection lives in one FreeRADIUS process, and the
+# NAS-Identifier -> connection table is in that process's memory. With more replicas, a CoA could
+# reach a pod that does not hold the NAS's connection and be NAKed (Error-Cause 502).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freeradius
+  labels: { app: freeradius }
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: never run two pods at once, or NASes would reconnect to the new pod
+  # while the coa Service still sends CoA to the old one.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: freeradius }
+  template:
+    metadata:
+      labels:
+        app: freeradius
+        # RadSec is end-to-end TLS from the NAS and CoA is UDP; a sidecar adds nothing here.
+        sidecar.istio.io/inject: "false"
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: freeradius
+          image: freeradius-radsec
+          envFrom:
+            - configMapRef: { name: freeradius-env }
+          env:
+            # Shared with radius-coa-worker: the secret on the worker -> FreeRADIUS CoA hop.
+            - name: RADIUS_SECRET
+              valueFrom: { secretKeyRef: { name: radius-coa, key: RADIUS_SECRET } }
+            - name: UPSTREAM_RADIUS_SECRET
+              valueFrom: { secretKeyRef: { name: freeradius-upstream, key: UPSTREAM_RADIUS_SECRET } }
+          ports:
+            - { name: radsec, containerPort: 2083, protocol: TCP }
+            - { name: coa, containerPort: 3799, protocol: UDP }
+          # Status-Server to the loopback-only "status" site (sites/status). A TCP probe on 2083
+          # would log a failed TLS handshake every period.
+          startupProbe:
+            exec: &probe
+              command:
+                - sh
+                - -c
+                - echo "Message-Authenticator = 0x00" | radclient -q -r 1 -t 2 127.0.0.1:18121 status probe
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            exec: *probe
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec: *probe
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # One file at a time into the image's (empty) sites-enabled/ and mods-enabled/: kubelet
+            # makes a ConfigMap volume's own directory world-writable, and FreeRADIUS refuses to
+            # $INCLUDE a world-writable directory. subPath mounts don't see ConfigMap edits, but
+            # the generator's content hash rolls the pod on every change anyway.
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/radsec, subPath: radsec, readOnly: true }
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/coa-relay, subPath: coa-relay, readOnly: true }
+            - { name: sites, mountPath: /etc/raddb/sites-enabled/status, subPath: status, readOnly: true }
+            - { name: mods, mountPath: /etc/raddb/mods-enabled/always, subPath: always, readOnly: true }
+            # Added to the image's stock policy.d/.
+            - { name: policy, mountPath: /etc/raddb/policy.d/radsec_coa_keys, subPath: radsec_coa_keys, readOnly: true }
+            - { name: radsec-tls, mountPath: /etc/raddb/radsec-tls, readOnly: true }
+            - { name: run, mountPath: /var/run/radiusd }
+            - { name: log, mountPath: /var/log/radius }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: sites
+          configMap: { name: freeradius-sites }
+        - name: mods
+          configMap: { name: freeradius-mods }
+        - name: policy
+          configMap: { name: freeradius-policy }
+        # tls.crt / tls.key / ca.crt (kubernetes.io/tls or cert-manager layout). FreeRADIUS reads
+        # them at startup only: restart the Deployment after the certificate is renewed.
+        - name: radsec-tls
+          secret: { secretName: radsec-tls, defaultMode: 0440 }
+        - { name: run, emptyDir: {} }
+        - { name: log, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+# RadSec entry point for NASes. externalTrafficPolicy: Local keeps the client's public (NAT)
+# address visible in FreeRADIUS logs. Keep any load balancer TCP idle timeout above the NAS
+# watchdog interval (30s recommended); see docs/radsec.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: freeradius-radsec
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: { app: freeradius }
+  ports:
+    - { name: radsec, port: 2083, targetPort: radsec, protocol: TCP }
+---
+# In-cluster CoA entry point for radius-coa-worker: nasAddress "freeradius-coa", port 3799.
+apiVersion: v1
+kind: Service
+metadata:
+  name: freeradius-coa
+spec:
+  selector: { app: freeradius }
+  ports:
+    - { name: coa, port: 3799, targetPort: coa, protocol: UDP }
+---
+# RadSec is open to the world (certificates are the access control); CoA only to the worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: freeradius
+spec:
+  podSelector:
+    matchLabels: { app: freeradius }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: 2083, protocol: TCP }
+    - from:
+        - podSelector:
+            matchLabels: { app: radius-coa-worker }
+      ports:
+        - { port: 3799, protocol: UDP }

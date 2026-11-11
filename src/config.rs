@@ -19,6 +19,10 @@ pub struct RadiusConfig {
     pub default_port: u16,
     pub timeout: Duration,
     pub retries: u32,
+    /// NAK Error-Causes that fail the activity with the retryable `CoaNakRetryable` instead of
+    /// returning the NAK as a result. Default `[502]` (Request Not Routable): only a proxy sends
+    /// it, e.g. the RadSec relay when the NAS's connection is down.
+    pub retry_error_causes: Vec<u32>,
     pub dictionary_path: Option<String>,
 }
 
@@ -30,6 +34,7 @@ impl fmt::Debug for RadiusConfig {
             .field("default_port", &self.default_port)
             .field("timeout", &self.timeout)
             .field("retries", &self.retries)
+            .field("retry_error_causes", &self.retry_error_causes)
             .field("dictionary_path", &self.dictionary_path)
             .finish()
     }
@@ -46,6 +51,7 @@ impl RadiusConfig {
             default_port: parse_or("RADIUS_COA_PORT", DEFAULT_COA_PORT)?,
             timeout: Duration::from_millis(parse_or("RADIUS_TIMEOUT_MS", 3000u64)?),
             retries: parse_or("RADIUS_RETRIES", 2u32)?,
+            retry_error_causes: parse_list("RADIUS_RETRY_ERROR_CAUSES", &[502])?,
             dictionary_path: non_empty("RADIUS_DICTIONARY"),
         })
     }
@@ -111,6 +117,19 @@ impl ResponderConfig {
 
 fn non_empty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// Comma-separated list; unset means `default`, empty (or `none`) means no entries.
+fn parse_list(key: &str, default: &[u32]) -> Result<Vec<u32>> {
+    let Ok(v) = env::var(key) else { return Ok(default.to_vec()) };
+    if v.trim().eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    v.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().with_context(|| format!("invalid value in {key}: {s:?}")))
+        .collect()
 }
 
 fn parse_or<T>(key: &str, default: T) -> Result<T>

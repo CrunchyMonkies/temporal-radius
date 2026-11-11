@@ -161,6 +161,10 @@ pub enum CoaError {
     /// No valid reply within timeout × (retries + 1).
     #[error("no reply from {nas} after {attempts} attempt(s)")]
     Timeout { nas: String, attempts: u32 },
+    /// The NAS (or a proxy in front of it) NAKed with an Error-Cause listed in
+    /// `RADIUS_RETRY_ERROR_CAUSES`, e.g. 502 from the RadSec relay while the NAS is reconnecting.
+    #[error("{code:?} from {nas} with retryable Error-Cause {error_cause}")]
+    RetryableNak { nas: String, code: ReplyCode, error_cause: u32 },
     #[error("network error talking to {nas}: {source}")]
     Io {
         nas: String,
@@ -172,7 +176,7 @@ pub enum CoaError {
 impl CoaError {
     /// Whether Temporal should retry the activity.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout { .. } | Self::Io { .. })
+        matches!(self, Self::Timeout { .. } | Self::Io { .. } | Self::RetryableNak { .. })
     }
 }
 
@@ -242,6 +246,11 @@ impl CoaClient {
                         AttributeValue::Number(n) => u32::try_from(n).ok(),
                         AttributeValue::Text(_) => None,
                     });
+                if let Some(cause) =
+                    error_cause.filter(|c| !code.is_ack() && self.cfg.retry_error_causes.contains(c))
+                {
+                    return Err(CoaError::RetryableNak { nas: nas_str, code, error_cause: cause });
+                }
                 return Ok(CoaResult {
                     code,
                     acked: code.is_ack(),

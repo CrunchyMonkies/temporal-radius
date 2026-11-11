@@ -1,0 +1,61 @@
+# -*- text -*-
+######################################################################
+#
+#  Reverse-CoA routing keys, shared by the radsec site (which labels a
+#  NAS's connection with them) and the coa-relay site (which looks a
+#  CoA's connection up by them), so both sides compute them the same way.
+#
+#  Sets in the control list:
+#    Tmp-String-0  "<NAS-Identifier>"
+#    Tmp-String-1  "<NAS-Identifier>/<called>", when the packet has a
+#                  usable Called-Station-Id
+#
+#  <called> is the MAC address at the start of Called-Station-Id,
+#  lowercase hex without separators, so "AA-BB-CC-DD-EE-FF:Guest",
+#  "aa:bb:cc:dd:ee:ff" and "aabb.ccdd.eeff" are the same key (the
+#  ":SSID" part is dropped).  A Called-Station-Id that isn't a MAC is
+#  used as-is, lowercased, if it is a plain name.
+#
+#  Only plain names are used: FreeRADIUS reads a key starting with "+"
+#  or "-" as add / delete.  Anything else leaves the attribute unset.
+#
+######################################################################
+radsec_coa_keys {
+	update control {
+		&Tmp-String-0 !* ANY
+		&Tmp-String-1 !* ANY
+	}
+	if (&NAS-Identifier =~ /^[A-Za-z0-9][A-Za-z0-9._:@-]*$/) {
+		update control {
+			&Tmp-String-0 := "%{NAS-Identifier}"
+		}
+		if (&Called-Station-Id =~ /^([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})([^0-9A-Fa-f]|$)/) {
+			update control {
+				&Tmp-String-1 := "%{NAS-Identifier}/%{tolower:%{1}%{2}%{3}%{4}%{5}%{6}}"
+			}
+		}
+		elsif (&Called-Station-Id =~ /^[A-Za-z0-9][A-Za-z0-9._:@-]*$/) {
+			update control {
+				&Tmp-String-1 := "%{NAS-Identifier}/%{tolower:%{Called-Station-Id}}"
+			}
+		}
+	}
+}
+
+#
+#  radsec site: label the connection the packet arrived on with both
+#  keys.  FreeRADIUS saves them when the reply is sent.
+#
+radsec_coa_register {
+	radsec_coa_keys
+	if (&control:Tmp-String-0) {
+		update control {
+			&Originating-Realm-Key += "%{control:Tmp-String-0}"
+		}
+	}
+	if (&control:Tmp-String-1) {
+		update control {
+			&Originating-Realm-Key += "%{control:Tmp-String-1}"
+		}
+	}
+}

@@ -91,14 +91,32 @@ mod tests {
     }
 
     fn client(secret: &str) -> CoaClient {
+        client_with_retry_causes(secret, vec![502])
+    }
+
+    fn client_with_retry_causes(secret: &str, retry_error_causes: Vec<u32>) -> CoaClient {
         CoaClient::new(RadiusConfig {
             secret: secret.into(),
             default_port: 3799,
             timeout: Duration::from_millis(200),
             retries: 1,
+            retry_error_causes,
             dictionary_path: None,
         })
         .unwrap()
+    }
+
+    /// A fake RadSec relay that NAKs every request with Error-Cause 502 (Request Not Routable).
+    async fn spawn_not_routable_relay() -> SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            let (n, peer) = socket.recv_from(&mut buf).await.unwrap();
+            let reply = coa::sign_response(45, &buf[..n], &[(101, 502u32.to_be_bytes().to_vec())], SECRET);
+            socket.send_to(&reply, peer).await.unwrap();
+        });
+        addr
     }
 
     fn request(addr: SocketAddr, kind: CoaKind, user: &str) -> CoaRequest {
@@ -132,6 +150,28 @@ mod tests {
         assert_eq!(res.code, ReplyCode::CoaNak);
         assert!(!res.acked);
         assert_eq!(res.error_cause, Some(503));
+    }
+
+    #[tokio::test]
+    async fn retryable_error_cause_fails_retryably() {
+        let addr = spawn_not_routable_relay().await;
+        let err = client(SECRET).send(&request(addr, CoaKind::Coa, "alice")).await.unwrap_err();
+        assert!(
+            matches!(err, CoaError::RetryableNak { code: ReplyCode::CoaNak, error_cause: 502, .. }),
+            "{err:?}"
+        );
+        assert!(err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn error_cause_not_listed_is_a_nak_result() {
+        let addr = spawn_not_routable_relay().await;
+        let res = client_with_retry_causes(SECRET, vec![])
+            .send(&request(addr, CoaKind::Coa, "alice"))
+            .await
+            .unwrap();
+        assert_eq!(res.code, ReplyCode::CoaNak);
+        assert_eq!(res.error_cause, Some(502));
     }
 
     #[tokio::test]

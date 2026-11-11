@@ -1,0 +1,96 @@
+# -*- text -*-
+#
+#  NAS simulator: a second FreeRADIUS that behaves like a RadSec NAS behind NAT.
+#  - Accepts Access-Requests on udp/1812 (from radclient) and proxies them over
+#    RadSec to the freeradius container, which opens the outbound TLS tunnel.
+#  - Accepts CoA / Disconnect requests coming back DOWN that tunnel and answers
+#    them like a NAS: ACK, or NAK with Error-Cause 503 if User-Name starts "nak".
+#
+
+listen {
+	type = auth
+	ipaddr = *
+	port = 1812
+	virtual_server = nas-front
+	clients = nas-front
+}
+
+clients nas-front {
+	client local {
+		ipaddr = 0.0.0.0/0
+		secret = testing123
+	}
+}
+
+home_server radsec {
+	ipaddr = freeradius
+	port = 2083
+	proto = tcp
+
+	#  "+coa" = also accept CoA / Disconnect requests from this home server,
+	#  sent down the connection we opened.
+	type = auth+acct+coa
+	secret = radsec
+	status_check = none
+	nonblock = yes
+
+	recv_coa {
+		virtual_server = nas-coa
+	}
+
+	tls {
+		certificate_file = ${confdir}/nas-tls/tls.crt
+		private_key_file = ${confdir}/nas-tls/tls.key
+		ca_file = ${confdir}/nas-tls/ca.crt
+		hostname = "freeradius"
+		fragment_size = 8192
+		tls_min_version = "1.2"
+		tls_max_version = "1.3"
+		cipher_list = "DEFAULT"
+		connect_timeout = 5
+	}
+}
+
+home_server_pool radsec {
+	type = fail-over
+	home_server = radsec
+}
+
+realm radsec {
+	auth_pool = radsec
+	nostrip
+}
+
+server nas-front {
+	authorize {
+		update control {
+			&Proxy-To-Realm := radsec
+		}
+	}
+	authenticate {
+	}
+	post-auth {
+	}
+	pre-proxy {
+		update proxy-request {
+			&NAS-Identifier := "nas-01"
+		}
+	}
+	post-proxy {
+	}
+}
+
+server nas-coa {
+	recv-coa {
+		if (&User-Name =~ /^nak/) {
+			update reply {
+				&Error-Cause := Session-Context-Not-Found
+			}
+			reject
+		}
+		ok
+	}
+	send-coa {
+		ok
+	}
+}

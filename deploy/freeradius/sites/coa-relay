@@ -1,0 +1,86 @@
+# -*- text -*-
+######################################################################
+#
+#  CoA relay: receives plain RFC 5176 CoA / Disconnect requests from
+#  radius-coa-worker on udp/3799 and sends each one down the RadSec
+#  connection of the NAS named by its NAS-Identifier, plus its
+#  Called-Station-Id if present (see the radsec site).  The NAS's ACK / NAK is relayed back to the worker.
+#
+#  Replies generated here rather than by the NAS (all NAKs):
+#    Error-Cause 502 Proxy-Request-Not-Routable: no connection carries
+#        that NAS-Identifier (NAS offline, or reconnecting after a NAT /
+#        pod restart), or the NAS did not answer within the coa timers
+#        in the radsec listen section (mrd = 6s).  The worker fails these
+#        with the retryable CoaNakRetryable (RADIUS_RETRY_ERROR_CAUSES).
+#    Error-Cause 506 Proxy-Processing-Error: every connection for that
+#        NAS is busy.
+#    Error-Cause 402 Missing-Attribute: no (usable) NAS-Identifier.
+#    Error-Cause 407 Invalid-Attribute-Value: Called-Station-Id present
+#        but not a MAC address or plain name.
+#
+#  Routing: by NAS-Identifier/Called-Station-Id when the request has a
+#  Called-Station-Id, otherwise by NAS-Identifier alone (see
+#  policy/radsec_coa_keys).  Devices that share a NAS-Identifier must
+#  always be addressed with Called-Station-Id.
+#  The worker's per-attempt timeout (RADIUS_TIMEOUT_MS) must be longer
+#  than mrd, or it gives up before FreeRADIUS answers.
+#
+######################################################################
+
+listen {
+	type = coa
+	ipaddr = *
+	port = 3799
+	proto = udp
+	virtual_server = coa-relay
+	clients = coa-relay
+}
+
+clients coa-relay {
+	#  Only the worker should reach this port; enforced by the
+	#  NetworkPolicy in freeradius.yaml.
+	client worker {
+		ipaddr = 0.0.0.0/0
+		secret = $ENV{RADIUS_SECRET}
+		require_message_authenticator = yes
+	}
+}
+
+server coa-relay {
+	recv-coa {
+		radsec_coa_keys
+
+		#  No (usable) NAS-Identifier.
+		if (!&control:Tmp-String-0) {
+			update reply {
+				&Error-Cause := Missing-Attribute
+			}
+			reject
+		}
+
+		#  With Called-Station-Id, route by NAS-Identifier/Called-Station-Id
+		#  only, never falling back to NAS-Identifier alone: when devices
+		#  share a NAS-Identifier that would reach an arbitrary one.
+		if (&Called-Station-Id) {
+			if (!&control:Tmp-String-1) {
+				update reply {
+					&Error-Cause := Invalid-Attribute-Value
+				}
+				reject
+			}
+			update control {
+				&Proxy-To-Originating-Realm := "%{control:Tmp-String-1}"
+			}
+		}
+		else {
+			update control {
+				&Proxy-To-Originating-Realm := "%{control:Tmp-String-0}"
+			}
+		}
+		ok
+	}
+
+	send-coa {
+		ok
+	}
+}

@@ -1,0 +1,17 @@
+# -*- text -*-
+#  The only modules these sites use: the "ok" / "reject" / "noop" return codes.
+#  The only file in mods-enabled (the image empties it), so none of the stock modules (eap, files, ...)
+#  are loaded; they need the default virtual servers, which this deployment replaces.
+always ok {
+	rcode = ok
+}
+always reject {
+	rcode = reject
+}
+always noop {
+	rcode = noop
+}
+
+#  For %{tolower:...} in policy/radsec_coa_keys.
+expr {
+}

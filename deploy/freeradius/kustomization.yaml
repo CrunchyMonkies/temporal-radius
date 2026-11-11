@@ -1,0 +1,35 @@
+# FreeRADIUS RadSec + reverse-CoA relay. See docs/radsec.md for setup.
+#
+# Expects these to exist in the namespace already (not created here):
+#   radius-coa           Secret, RADIUS_SECRET shared with the worker (deploy/test creates it)
+#   radsec-tls           Secret, tls.crt / tls.key / ca.crt for the RadSec listener
+#   freeradius-upstream  Secret, UPSTREAM_RADIUS_SECRET for the upstream RADIUS server
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: radius-coa-test
+resources:
+  - freeradius.yaml
+configMapGenerator:
+  # Content-hashed names: editing a site or the env rolls the Deployment automatically.
+  - name: freeradius-sites
+    files:
+      - sites/radsec
+      - sites/coa-relay
+      - sites/status
+  - name: freeradius-mods
+    files:
+      - mods/always
+  - name: freeradius-policy
+    files:
+      - policy/radsec_coa_keys
+  - name: freeradius-env
+    literals:
+      - UPSTREAM_RADIUS_HOST=radius.example.internal
+      - UPSTREAM_RADIUS_AUTH_PORT=1812
+      # Seconds without any packet from a NAS before its connection is closed. Keep >= 4x the NAS
+      # Status-Server watchdog interval (30s recommended).
+      - RADSEC_IDLE_TIMEOUT=120
+images:
+  - name: freeradius-radsec
+    newName: harbor.bne1.ouchi.com.au/library/freeradius-radsec
+    newTag: 3.2.11-9ec1249

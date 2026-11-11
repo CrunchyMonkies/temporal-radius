@@ -1,0 +1,25 @@
+# -*- text -*-
+#
+#  Loopback-only Status-Server listener for the Kubernetes probes:
+#    echo "Message-Authenticator = 0x00" | radclient -q -r 1 -t 2 127.0.0.1:18121 status probe
+#  Probing tcp/2083 instead would log a failed TLS handshake every period.
+#
+server status {
+	listen {
+		type = status
+		ipaddr = 127.0.0.1
+		port = 18121
+	}
+
+	client probe {
+		ipaddr = 127.0.0.1
+		secret = probe
+	}
+
+	authorize {
+		ok
+		Autz-Type Status-Server {
+			ok
+		}
+	}
+}
